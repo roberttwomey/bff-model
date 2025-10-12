@@ -9,7 +9,8 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
+# DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
 
 # Whisper config
 WHISPER_SIZE   = os.environ.get("WHISPER_SIZE", "tiny.en")  # tiny.en/base.en/small.en/…
@@ -84,3 +85,32 @@ async def stt(file: UploadFile = File(...)):
     finally:
         try: os.remove(tmp_path)
         except: pass
+
+# ---------- HTTPS Server Startup ----------
+if __name__ == "__main__":
+    import uvicorn
+    
+    # Check if SSL files exist
+    ssl_keyfile = "key.pem"
+    ssl_certfile = "cert.pem"
+    
+    if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
+        print(f"[HTTPS] Starting server with SSL certificate")
+        uvicorn.run(
+            "server:app",
+            host="0.0.0.0",
+            port=8443,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile,
+            reload=False  # Set to True for development
+        )
+    else:
+        print(f"[HTTP] SSL files not found, starting without HTTPS")
+        print(f"[HTTP] To enable HTTPS, generate certificates with:")
+        print(f"[HTTP]   openssl req -x509 -newkey rsa:4096 -nodes -out cert.pem -keyout key.pem -days 365")
+        uvicorn.run(
+            "server:app",
+            host="0.0.0.0",
+            port=8000,
+            reload=False
+        )
