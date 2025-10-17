@@ -148,9 +148,17 @@ function loadVoicesIntoSelect() {
   const saved = storage.voiceURI;
   if (saved && voices.some(v => v.voiceURI === saved)) {
     voiceSelect.value = saved;
-  } else if (voices[0]) {
-    voiceSelect.value = voices[0].voiceURI;
-    storage.voiceURI = voices[0].voiceURI;
+  } else {
+    // Look for Microsoft Ryan voice first
+    const ryanVoice = voices.find(v => v.name.includes('Ryan') && v.lang.includes('en-GB'));
+    
+    if (ryanVoice) {
+      voiceSelect.value = ryanVoice.voiceURI;
+      storage.voiceURI = ryanVoice.voiceURI;
+    } else if (voices[0]) {
+      voiceSelect.value = voices[0].voiceURI;
+      storage.voiceURI = voices[0].voiceURI;
+    }
   }
 }
 function currentVoice() {
