@@ -2,13 +2,15 @@
 
 A FastAPI-based server that provides chat functionality with Ollama integration and speech-to-text capabilities using Whisper. This project serves as a backend for AI model interactions with support for both text and image inputs.
 
+This is primarily focused on Jetson Orin Nano deployment (8GB), but can also be tested on mac silicon laptops.
+
 ## Table of Contents
 1. [Setup and Installation](#setup-and-installation)
 2. [Usage](#usage)
 3. [Testing](#testing)
 4. [Models](#models)
 
-## Setup and Installation
+## Setup and Installation on Mac OS
 
 ### Prerequisites
 - macOS system
@@ -89,7 +91,11 @@ For vision capabilities, also pull:
 ollama pull qwen2.5vl:3b
 ```
 
-## Usage
+or one of the other vision models listed in the [Models](#models) section. I prefer gemma3:4b for the vision model (which you can currently only test through the ollama CLI, not through the web interface)
+
+## Usage of Web Interface
+
+What's cool is, once you have started this interface on your laptop, you can connect to it with your phone or other devices on the current network, and use your headset. You can also use your headset through the browser on your laptop.
 
 ### Start the Server
 
@@ -112,6 +118,10 @@ The server will start on:
 - `POST /stt` - Speech-to-text conversion
 
 ### Environment Variables
+
+I don't ever use this so please ignore. 
+
+The server code itself, including the web frontend allows you to select the model directly. But you will need to download models beforehand to use them—-with the `ollama pull` commands described above.
 
 Configure the server using these environment variables:
 
