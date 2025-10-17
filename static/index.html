@@ -454,14 +454,8 @@ function pollVAD() {
   analyser.getFloatTimeDomainData(floatBuf);
   const db = dbfs_of_frame(floatBuf);
 
-  // If TTS is currently speaking, we can optionally suppress VAD (echo).
-  // Simple heuristic: pause listening during speech synthesis queue.
+  // Check if TTS is currently speaking
   speaking = speechSynthesis.speaking;
-  if (speaking) {
-    speechFrames = 0;
-    silenceFrames = 0;
-    return; // skip VAD while TTS is active
-  }
 
   // State machine:
   if (!recordingActive) {
@@ -469,6 +463,10 @@ function pollVAD() {
     if (db > VAD_CFG.startDb) {
       speechFrames++;
       if (speechFrames >= VAD_CFG.startFrames) {
+        // Stop TTS immediately when speech is detected
+        if (speaking) {
+          stopSpeaking();
+        }
         startRecordingNow();
         speechFrames = 0;
         silenceFrames = 0;
