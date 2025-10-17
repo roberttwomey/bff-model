@@ -248,6 +248,9 @@ function stopSpeaking() {
 let ttsQueue = [];
 let isSpeakingProgressive = false;
 let currentUtterance = null;
+let accumulatedText = '';
+let lastSpokenIndex = 0;
+let speakTimeout = null;
 
 function speak(text) {
   try {
@@ -262,54 +265,111 @@ function speak(text) {
   } catch (e) {}
 }
 
-function speakProgressive(text) {
-  if (!speakToggle.checked || !text) return;
-  
-  // Add to queue
-  ttsQueue.push(text);
-  
-  // Start processing if not already speaking
-  if (!isSpeakingProgressive) {
-    processTTSQueue();
-  }
-}
-
-function processTTSQueue() {
-  if (ttsQueue.length === 0) {
-    isSpeakingProgressive = false;
+function speakProgressive(newText) {
+  if (!speakToggle.checked || !newText) {
+    console.log('TTS skipped:', { speakToggle: speakToggle.checked, newText });
     return;
   }
   
-  isSpeakingProgressive = true;
-  const text = ttsQueue.shift();
+  console.log('TTS progressive:', newText);
   
-  try {
-    currentUtterance = new SpeechSynthesisUtterance(text);
-    const v = currentVoice();
-    if (v) currentUtterance.voice = v;
-    currentUtterance.rate  = parseFloat(rateSlider.value || '1.0');
-    currentUtterance.pitch = parseFloat(pitchSlider.value || '1.0');
-    
-    currentUtterance.onend = () => {
-      // Process next item in queue
-      setTimeout(processTTSQueue, 50); // Small delay between utterances
-    };
-    
-    currentUtterance.onerror = () => {
-      // Continue with next item even if this one failed
-      setTimeout(processTTSQueue, 50);
-    };
-    
-    speechSynthesis.speak(currentUtterance);
-  } catch (e) {
-    // Continue with next item even if this one failed
-    setTimeout(processTTSQueue, 50);
+  // Add new text to accumulated text
+  accumulatedText += newText;
+  
+  // Clear any existing timeout
+  if (speakTimeout) {
+    clearTimeout(speakTimeout);
+  }
+  
+  // Set a timeout to speak accumulated words
+  speakTimeout = setTimeout(() => {
+    speakAccumulatedText();
+  }, 200); // Wait 200ms for more text to accumulate
+}
+
+function speakAccumulatedText() {
+  if (!speakToggle.checked || !accumulatedText) {
+    console.log('TTS accumulated skipped:', { speakToggle: speakToggle.checked, accumulatedText });
+    return;
+  }
+  
+  // Find the next sentence or phrase to speak
+  const textToSpeak = findNextSpeechChunk(accumulatedText, lastSpokenIndex);
+  
+  console.log('TTS accumulated:', { textToSpeak, lastSpokenIndex, accumulatedLength: accumulatedText.length });
+  
+  if (textToSpeak) {
+    try {
+      currentUtterance = new SpeechSynthesisUtterance(textToSpeak);
+      const v = currentVoice();
+      if (v) currentUtterance.voice = v;
+      currentUtterance.rate  = parseFloat(rateSlider.value || '1.0');
+      currentUtterance.pitch = parseFloat(pitchSlider.value || '1.0');
+      
+      currentUtterance.onend = () => {
+        // Update last spoken index
+        lastSpokenIndex += textToSpeak.length;
+        
+        // Check if there's more text to speak
+        if (lastSpokenIndex < accumulatedText.length) {
+          setTimeout(() => speakAccumulatedText(), 100);
+        }
+      };
+      
+      currentUtterance.onerror = () => {
+        // Continue even if this chunk failed
+        lastSpokenIndex += textToSpeak.length;
+        if (lastSpokenIndex < accumulatedText.length) {
+          setTimeout(() => speakAccumulatedText(), 100);
+        }
+      };
+      
+      speechSynthesis.speak(currentUtterance);
+    } catch (e) {
+      console.error('TTS error:', e);
+    }
   }
 }
 
+function findNextSpeechChunk(text, startIndex) {
+  const remainingText = text.substring(startIndex).trim();
+  if (!remainingText) return null;
+  
+  // Look for sentence endings first
+  const sentenceEnd = remainingText.search(/[.!?]\s+/);
+  if (sentenceEnd !== -1 && sentenceEnd > 10) {
+    return remainingText.substring(0, sentenceEnd + 1);
+  }
+  
+  // Look for clause endings (commas, semicolons)
+  const clauseEnd = remainingText.search(/[,;]\s+/);
+  if (clauseEnd !== -1 && clauseEnd > 15) {
+    return remainingText.substring(0, clauseEnd + 1);
+  }
+  
+  // Look for natural word boundaries (spaces)
+  const words = remainingText.split(' ');
+  if (words.length >= 5) {
+    // Speak at least 5 words
+    return words.slice(0, 5).join(' ');
+  } else if (words.length >= 3 && remainingText.length > 20) {
+    // Speak at least 3 words if the text is long enough
+    return words.slice(0, 3).join(' ');
+  }
+  
+  return null; // Wait for more text
+}
+
 function stopProgressiveTTS() {
-  ttsQueue = [];
+  accumulatedText = '';
+  lastSpokenIndex = 0;
   isSpeakingProgressive = false;
+  
+  if (speakTimeout) {
+    clearTimeout(speakTimeout);
+    speakTimeout = null;
+  }
+  
   if (currentUtterance) {
     speechSynthesis.cancel();
     currentUtterance = null;
@@ -381,9 +441,8 @@ async function sendToJetsonStream(userText, server, payload) {
   const url = server + "/chat/stream";
   
   return new Promise((resolve, reject) => {
-    const eventSource = new EventSource(url, {
-      // Note: EventSource doesn't support POST directly, so we'll need to modify the approach
-    });
+    // Reset TTS state for new response
+    stopProgressiveTTS();
     
     // Since EventSource doesn't support POST, we'll use fetch with streaming
     fetch(url, {
@@ -421,6 +480,7 @@ async function sendToJetsonStream(userText, server, payload) {
                 
                 if (data.type === 'content') {
                   const content = data.content;
+                  console.log('Stream content received:', content);
                   fullReply += content;
                   
                   // Create or update streaming bubble
@@ -433,7 +493,14 @@ async function sendToJetsonStream(userText, server, payload) {
                   speakProgressive(content);
                   
                 } else if (data.type === 'done') {
-                  // Streaming complete
+                  // Streaming complete - speak any remaining text
+                  if (accumulatedText && lastSpokenIndex < accumulatedText.length) {
+                    const remainingText = accumulatedText.substring(lastSpokenIndex).trim();
+                    if (remainingText) {
+                      speak(remainingText);
+                    }
+                  }
+                  
                   if (currentBubble) {
                     finalizeStreamingBubble(currentBubble);
                   }
