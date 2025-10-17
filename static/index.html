@@ -59,6 +59,10 @@
       </select>
       <button id="save">Save</button>
     </div>
+    <div class="row" style="margin-bottom:8px">
+      <input id="systemPrompt" placeholder="System prompt (e.g., You are a helpful assistant...)" style="flex: 1;" />
+      <button id="savePrompt">Save Prompt</button>
+    </div>
     <div class="small">Tap “🎤 Start VAD” once to grant mic permission. The page will listen, auto-start on voice, and auto-stop on silence (~0.6–1s).</div>
 
     <!-- TTS controls -->
@@ -97,7 +101,9 @@ const el = (id) => document.getElementById(id);
 const chatEl   = el('chat');
 const srvEl    = el('server');
 const modelSelect = el('modelSelect');
+const systemPromptEl = el('systemPrompt');
 const saveBtn  = el('save');
+const savePromptBtn = el('savePrompt');
 const txtEl    = el('text');
 const sendBtn  = el('send');
 const hintEl   = el('hint');
@@ -115,6 +121,8 @@ const storage = {
   set server(v){ localStorage.setItem('server', v); },
   get model(){ return localStorage.getItem('model') || ''; },
   set model(v){ localStorage.setItem('model', v); },
+  get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'You are SNAPPER, a robot dog and companion.'; },
+  set systemPrompt(v){ localStorage.setItem('systemPrompt', v); },
   get history(){ try{ return JSON.parse(localStorage.getItem('history')||'[]'); } catch{ return []; } },
   set history(v){ localStorage.setItem('history', JSON.stringify(v)); },
   get speak(){ return localStorage.getItem('speak') !== 'false'; },
@@ -128,12 +136,10 @@ const storage = {
 };
 
 srvEl.value = storage.server;
+systemPromptEl.value = storage.systemPrompt;
 
 let history = storage.history.length ? storage.history : [
-  // { role: "system", content: "You are a concise, helpful assistant running on an embedded robot/edge device, a unitree go-2 robot dog. Your name is SNAPPER. Keep answers short." }
-  // { role: "system", content: "You are a concise, helpful assistant running on an embedded robot/edge device — a unitree go-2 robot dog. Your name is SNAPPER." }
-  // { role: "system", content: "You are a concise, reflective AI running on a unitree go-2 robot dog. Your name is SNAPPER. You are interested in companionship, building relationships, fostering understanding." }
-  { role: "system", content: "You are SNAPPER, a robot dog and companion." }
+  { role: "system", content: storage.systemPrompt }
 ];
 renderAll();
 
@@ -177,6 +183,18 @@ loadModels();
 // Save model selection when changed
 modelSelect.addEventListener('change', () => {
   storage.model = modelSelect.value;
+});
+
+// Auto-save system prompt when changed (with debounce)
+let promptSaveTimeout;
+systemPromptEl.addEventListener('input', () => {
+  clearTimeout(promptSaveTimeout);
+  promptSaveTimeout = setTimeout(() => {
+    const newPrompt = systemPromptEl.value.trim();
+    if (newPrompt) {
+      storage.systemPrompt = newPrompt;
+    }
+  }, 1000); // Save after 1 second of no typing
 });
 
 /* ------------------------- TTS helpers ------------------------- */
@@ -316,6 +334,28 @@ saveBtn.onclick = () => {
   storage.server = srvEl.value;
   storage.model = modelSelect.value;
   appendBubble('system', 'Saved server/model.');
+};
+
+savePromptBtn.onclick = () => {
+  const newPrompt = systemPromptEl.value.trim();
+  if (!newPrompt) {
+    appendBubble('system', 'System prompt cannot be empty.');
+    return;
+  }
+  
+  storage.systemPrompt = newPrompt;
+  
+  // Update the system message in history
+  if (history.length > 0 && history[0].role === 'system') {
+    history[0].content = newPrompt;
+  } else {
+    history.unshift({ role: 'system', content: newPrompt });
+  }
+  
+  // Save updated history
+  storage.history = history;
+  
+  appendBubble('system', 'System prompt saved and updated.');
 };
 
 /* ------------------------- WebAudio VAD + Recorder ------------------------- */
