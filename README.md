@@ -179,54 +179,135 @@ time ollama run qwen2.5vl:3b "Describe this scene briefly: @/path/to/image.jpg"
 
 Based on your system (`ollama list` output):
 
-| Model | Size | Vision Support | Jetson Nano Compatible |
-|-------|------|----------------|----------------------|
-| `gemma3:latest` | 3.3 GB | ❌ | ✅ |
-| `gemma3n:latest` | 7.5 GB | ❌ | ❌ |
-| `gemma3n:e4b` | 7.5 GB | ❌ | ❌ |
-| `llama3.2:3b` | 2.0 GB | ❌ | ✅ |
-| `qwen2.5vl:7b` | 6.0 GB | ✅ | ❌ |
-| `llama3:latest` | 4.7 GB | ❌ | ❌ |
+| Model | Size | Vision Support | Jetson Nano Compatible | Notes |
+|-------|------|----------------|----------------------|-------|
+| `deepseek-r1:1.5b` | 1.1 GB | ❌ | ✅ | Advanced reasoning with `<think>` process |
+| `granite3.2-vision:latest` | 2.4 GB | ✅ | ✅ | IBM's vision model |
+| `gemma3:1b` | 815 MB | ❌ | ✅ | Ultra-lightweight text model |
+| `gemma3:270m` | 291 MB | ❌ | ✅ | Micro text model |
+| `moondream:latest` | 1.7 GB | ✅ | ✅ | Lightweight vision model |
+| `qwen2.5vl:7b` | 6.0 GB | ✅ | ❌ | Large vision-language model |
+| `qwen2.5vl:3b` | 3.2 GB | ✅ | ✅ | Medium vision-language model |
+| `gemma3:latest` | 3.3 GB | ✅ | ✅ | Standard vision model |
+| `gemma3n:e4b` | 7.5 GB | ❌ | ❌ | Large text model (vision capable, not via Ollama) |
+| `gemma3n:e2b` | 5.6 GB | ❌ | ❌ | Medium-large text model (vision capable, not via Ollama) |
+| `gemma3:4b` | 3.3 GB | ✅ | ✅ | 4B parameter vision model |
+| `snapper-01:latest` | 2.0 GB | ❌ | ✅ | Custom model |
+| `llama3.2:3b` | 2.0 GB | ❌ | ✅ | Meta's 3B model |
 
 ### Vision Models (Accept Images)
 
-- **`qwen2.5vl:3b`** - 3B parameter vision-language model
-- **`qwen2.5vl:7b`** - 7B parameter vision-language model (currently installed)
+**Currently Installed Vision Models:**
+
+- **`granite3.2-vision:latest`** - IBM's vision model (2.4 GB) 
+- **`gemma3:4b`** - 4B parameter vision model (3.3 GB)
+- **`gemma3:latest`** - Standard vision model (3.3 GB)
+- **`moondream:latest`** - Lightweight vision model (1.7 GB)
+- **`qwen2.5vl:3b`** - 3B parameter vision-language model (3.2 GB)
+- **`qwen2.5vl:7b`** - 7B parameter vision-language model (6.0 GB) - WON'T RUN ON JETSON
+
+**Vision Model Characteristics:**
+
+- **`granite3.2-vision:latest`**: IBM's enterprise-grade vision model
+- **`gemma3:4b/latest`**: Google's efficient vision models with excellent image understanding
+- **`moondream:latest`**: Optimized for mobile/edge devices
+- **`qwen2.5vl:3b/7b`**: Alibaba's vision-language models with strong image understanding
 
 To install additional vision models:
 
 ```bash
-# Install smaller vision model for Jetson Nano
-ollama pull qwen2.5vl:3b
-
 # Install other vision models
 ollama pull llava:7b
 ollama pull bakllava:7b
+ollama pull llava:13b
 ```
 
 ### Jetson Nano Compatible Models
 
 Models suitable for Jetson Nano (ARM64, limited RAM):
 
-**Recommended for Jetson Nano:**
-- `llama3.2:3b` (2.0 GB) - Good balance of performance and resource usage
-- `gemma3:latest` (3.3 GB) - Efficient text model
-- `qwen2.5vl:3b` (when available) - Vision capabilities in smaller size
+**Text Models (No Vision):**
+- `gemma3:270m` (291 MB) - Ultra-lightweight text, fastest
+- `gemma3:1b` (815 MB) - Very lightweight text
+- `deepseek-r1:1.5b` (1.1 GB) - Advanced reasoning with `<think>` process
+- `snapper-01:latest` (2.0 GB) - Custom model
+- `llama3.2:3b` (2.0 GB) - Meta's efficient model
+- `gemma3n:e4b` (7.5 GB) - Large text model (vision capable, not via Ollama)
+- `gemma3n:e2b` (5.6 GB) - Medium-large text model (vision capable, not via Ollama)
+
+**Vision Models for Jetson Nano:**
+- `moondream:latest` (1.7 GB) - Lightweight vision optimized for edge
+- `granite3.2-vision:latest` (2.4 GB) - IBM's enterprise vision
+- `qwen2.5vl:3b` (3.2 GB) - Balanced vision-language model
+- `gemma3:4b` (3.3 GB) - 4B parameter vision model
+- `gemma3:latest` (3.3 GB) - Standard vision model
 
 **Install Jetson Nano compatible models:**
 
 ```bash
-# Pull smaller models for Jetson Nano
-ollama pull llama3.2:3b
-ollama pull gemma3:4b
+# Ultra-lightweight text models
+ollama pull gemma3:270m
+ollama pull gemma3:1b
+
+# Advanced reasoning text model
+ollama pull deepseek-r1:1.5b
+
+# Vision models for Jetson Nano
+ollama pull granite3.2-vision:latest
+ollama pull moondream:latest
 ollama pull qwen2.5vl:3b
+ollama pull gemma3:4b
+
+# Standard text models
+ollama pull llama3.2:3b
 ```
+
+### Special Model Features
+
+#### DeepSeek-R1 Reasoning Process
+
+The `deepseek-r1:1.5b` model performs advanced self-reasoning before responding:
+
+```bash
+ollama run deepseek-r1:1.5b "Solve this math problem: 2x + 5 = 13"
+```
+
+**Example Output:**
+```
+<think>
+I need to solve the equation 2x + 5 = 13.
+
+First, I'll isolate the variable x by subtracting 5 from both sides:
+2x + 5 - 5 = 13 - 5
+2x = 8
+
+Then I'll divide both sides by 2:
+2x / 2 = 8 / 2
+x = 4
+
+Let me verify: 2(4) + 5 = 8 + 5 = 13 ✓
+</think>
+
+To solve 2x + 5 = 13:
+
+1. Subtract 5 from both sides: 2x = 8
+2. Divide by 2: x = 4
+
+The solution is x = 4.
+```
+
+This reasoning process makes DeepSeek-R1 particularly good for:
+- Complex problem solving
+- Step-by-step analysis
+- Mathematical reasoning
+- Logical deduction
 
 ### Model Performance Notes
 
 - **Response Times**: Vision models typically take longer (10-50 seconds) compared to text-only models (1-5 seconds)
 - **Memory Usage**: Larger models require more RAM - monitor system resources when running multiple models
 - **Jetson Nano**: Stick to models under 4GB for optimal performance
+- **DeepSeek-R1**: May take longer due to reasoning process, but provides more thorough responses
 
 ### Additional Model Information
 
