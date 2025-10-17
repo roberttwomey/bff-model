@@ -47,6 +47,20 @@ async def root():
 async def health():
     return {"ok": True}
 
+@app.get("/models")
+async def get_models():
+    """Fetch available OLLAMA models"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(OLLAMA_URL.replace("/api/chat", "/api/tags"))
+            r.raise_for_status()
+            data = r.json()
+            models = [model["name"] for model in data.get("models", [])]
+            return {"models": models}
+    except Exception as e:
+        # Fallback to default model if OLLAMA is not available
+        return {"models": [DEFAULT_MODEL]}
+
 @app.post("/chat")
 async def chat(payload: ChatIn):
     model = payload.model or DEFAULT_MODEL
