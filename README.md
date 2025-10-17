@@ -1,8 +1,10 @@
 # BFF Model Server
 
-A FastAPI-based server that provides chat functionality with Ollama integration and speech-to-text capabilities using Whisper. This project serves as a backend for AI model interactions with support for both text and image inputs.
+A FastAPI-based server that provides chat functionality with Ollama integration and speech-to-text (STT)capabilities using Whisper and text-to-speech (TTS) capabilities using WebSpeech API. This project serves as a backend for AI model interactions with support for both text and image inputs.
 
 This is primarily focused on Jetson Orin Nano deployment (8GB), but can also be tested on mac silicon laptops.
+
+It would be good to experiment with what models work best, what system prompts work best (can be set through web interface), and what voice you like for text-to-speech (TTS, also set through web interface. varies by browser and OS).
 
 ## Table of Contents
 1. [Setup and Installation](#setup-and-installation)
