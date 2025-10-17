@@ -208,6 +208,12 @@ function currentVoice() {
   const uri = voiceSelect.value;
   return speechSynthesis.getVoices().find(v => v.voiceURI === uri) || null;
 }
+function stopSpeaking() {
+  try {
+    speechSynthesis.cancel();
+  } catch (e) {}
+}
+
 function speak(text) {
   try {
     if (!speakToggle.checked || !text) return;
@@ -279,6 +285,10 @@ async function sendToJetson(userText){
 sendBtn.onclick = async () => {
   const text = txtEl.value.trim();
   if(!text) return;
+  
+  // Stop any ongoing TTS when user submits new message
+  stopSpeaking();
+  
   txtEl.value = "";
   appendBubble('user', text);
   try {
@@ -289,7 +299,18 @@ sendBtn.onclick = async () => {
     appendBubble('system', 'Error: ' + err.message);
   }
 };
-txtEl.addEventListener('keydown', (e) => { if(e.key === 'Enter') sendBtn.click(); });
+txtEl.addEventListener('keydown', (e) => { 
+  if(e.key === 'Enter') {
+    // Stop TTS when user presses Enter to send message
+    stopSpeaking();
+    sendBtn.click(); 
+  }
+});
+
+// Stop TTS when user starts typing
+txtEl.addEventListener('input', () => {
+  stopSpeaking();
+});
 saveBtn.onclick = () => {
   storage.server = srvEl.value;
   storage.model = modelSelect.value;
@@ -381,6 +402,10 @@ function pickMimeType() {
 
 function startRecordingNow() {
   if (recordingActive) return;
+  
+  // Stop any ongoing TTS when user starts speaking
+  stopSpeaking();
+  
   recChunks = [];
   recorder.start();
   utterStartTs = performance.now();
