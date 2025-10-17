@@ -244,13 +244,17 @@ function stopSpeaking() {
   } catch (e) {}
 }
 
-// Progressive TTS state
-let ttsQueue = [];
-let isSpeakingProgressive = false;
-let currentUtterance = null;
-let accumulatedText = '';
-let lastSpokenIndex = 0;
-let speakTimeout = null;
+// Progressive TTS state - using the robust streaming pattern
+const synth = window.speechSynthesis;
+let ttsBuffer = '';
+let queued = 0;
+let currentProgressiveStream = null;
+
+// Progressive TTS constants
+const MIN_CHUNK = 40;   // start speaking once we have ~a short phrase
+const MAX_CHUNK = 140;  // hard cap to avoid overlong chunks
+const PUNCT_PATTERN = /([.!?…]|[\n\r])(?=\s|$)/g;
+const QUEUE_LIMIT = 3;  // keep the synth queue short for low latency
 
 function speak(text) {
   try {
@@ -265,115 +269,96 @@ function speak(text) {
   } catch (e) {}
 }
 
+function makeUtterance(text, voice) {
+  const u = new SpeechSynthesisUtterance(text);
+  if (voice) u.voice = voice;
+  u.rate = parseFloat(rateSlider.value || '1.0');
+  u.pitch = parseFloat(pitchSlider.value || '1.0');
+  return u;
+}
+
+function enqueue(text) {
+  if (!text.trim()) return;
+  
+  const voice = currentVoice();
+  const u = makeUtterance(text, voice);
+  queued++;
+  u.onend = () => queued--;
+  u.onerror = () => queued--;
+  synth.speak(u);
+  
+  console.log('TTS enqueued:', text, 'queue size:', queued);
+}
+
+function maybeFlush(force = false) {
+  if (!ttsBuffer.trim()) return;
+  
+  // Prefer to cut at the last sentence-ish boundary
+  let cutIdx = -1;
+  if (ttsBuffer.length >= MIN_CHUNK) {
+    let m, last = -1;
+    PUNCT_PATTERN.lastIndex = 0; // Reset regex state
+    while ((m = PUNCT_PATTERN.exec(ttsBuffer)) !== null) {
+      last = m.index + m[0].length;
+    }
+    if (last > 0) cutIdx = last;
+    if (cutIdx < 0 && (force || ttsBuffer.length >= MAX_CHUNK)) {
+      cutIdx = Math.min(ttsBuffer.length, MAX_CHUNK);
+    }
+  }
+  
+  if (cutIdx > 0) {
+    const chunk = ttsBuffer.slice(0, cutIdx).trim();
+    ttsBuffer = ttsBuffer.slice(cutIdx);
+    
+    // backpressure: don't let the queue explode
+    if (queued >= QUEUE_LIMIT) {
+      console.log('TTS queue full, canceling and restarting');
+      synth.cancel(); 
+      queued = 0;
+    }
+    
+    if (chunk) enqueue(chunk);
+  }
+}
+
 function speakProgressive(newText) {
   if (!speakToggle.checked || !newText) {
     console.log('TTS skipped:', { speakToggle: speakToggle.checked, newText });
     return;
   }
   
-  console.log('TTS progressive:', newText);
+  console.log('TTS progressive chunk:', newText);
   
-  // Add new text to accumulated text
-  accumulatedText += newText;
+  // Add new text to buffer
+  ttsBuffer += newText;
   
-  // Clear any existing timeout
-  if (speakTimeout) {
-    clearTimeout(speakTimeout);
-  }
-  
-  // Set a timeout to speak accumulated words
-  speakTimeout = setTimeout(() => {
-    speakAccumulatedText();
-  }, 200); // Wait 200ms for more text to accumulate
+  // Try to flush at natural boundaries as text accumulates
+  maybeFlush(false);
 }
 
-function speakAccumulatedText() {
-  if (!speakToggle.checked || !accumulatedText) {
-    console.log('TTS accumulated skipped:', { speakToggle: speakToggle.checked, accumulatedText });
-    return;
-  }
-  
-  // Find the next sentence or phrase to speak
-  const textToSpeak = findNextSpeechChunk(accumulatedText, lastSpokenIndex);
-  
-  console.log('TTS accumulated:', { textToSpeak, lastSpokenIndex, accumulatedLength: accumulatedText.length });
-  
-  if (textToSpeak) {
-    try {
-      currentUtterance = new SpeechSynthesisUtterance(textToSpeak);
-      const v = currentVoice();
-      if (v) currentUtterance.voice = v;
-      currentUtterance.rate  = parseFloat(rateSlider.value || '1.0');
-      currentUtterance.pitch = parseFloat(pitchSlider.value || '1.0');
-      
-      currentUtterance.onend = () => {
-        // Update last spoken index
-        lastSpokenIndex += textToSpeak.length;
-        
-        // Check if there's more text to speak
-        if (lastSpokenIndex < accumulatedText.length) {
-          setTimeout(() => speakAccumulatedText(), 100);
-        }
-      };
-      
-      currentUtterance.onerror = () => {
-        // Continue even if this chunk failed
-        lastSpokenIndex += textToSpeak.length;
-        if (lastSpokenIndex < accumulatedText.length) {
-          setTimeout(() => speakAccumulatedText(), 100);
-        }
-      };
-      
-      speechSynthesis.speak(currentUtterance);
-    } catch (e) {
-      console.error('TTS error:', e);
+function finalizeProgressiveTTS() {
+  // Flush what's left in the buffer
+  if (ttsBuffer.trim()) {
+    console.log('TTS finalizing remaining text:', ttsBuffer);
+    
+    // Split any long tail into manageable bits
+    while (ttsBuffer.length) {
+      maybeFlush(true);
+      if (ttsBuffer.length && ttsBuffer.length < MIN_CHUNK) {
+        enqueue(ttsBuffer);
+        ttsBuffer = "";
+      }
     }
   }
 }
 
-function findNextSpeechChunk(text, startIndex) {
-  const remainingText = text.substring(startIndex).trim();
-  if (!remainingText) return null;
-  
-  // Look for sentence endings first
-  const sentenceEnd = remainingText.search(/[.!?]\s+/);
-  if (sentenceEnd !== -1 && sentenceEnd > 10) {
-    return remainingText.substring(0, sentenceEnd + 1);
-  }
-  
-  // Look for clause endings (commas, semicolons)
-  const clauseEnd = remainingText.search(/[,;]\s+/);
-  if (clauseEnd !== -1 && clauseEnd > 15) {
-    return remainingText.substring(0, clauseEnd + 1);
-  }
-  
-  // Look for natural word boundaries (spaces)
-  const words = remainingText.split(' ');
-  if (words.length >= 5) {
-    // Speak at least 5 words
-    return words.slice(0, 5).join(' ');
-  } else if (words.length >= 3 && remainingText.length > 20) {
-    // Speak at least 3 words if the text is long enough
-    return words.slice(0, 3).join(' ');
-  }
-  
-  return null; // Wait for more text
-}
-
 function stopProgressiveTTS() {
-  accumulatedText = '';
-  lastSpokenIndex = 0;
-  isSpeakingProgressive = false;
-  
-  if (speakTimeout) {
-    clearTimeout(speakTimeout);
-    speakTimeout = null;
-  }
-  
-  if (currentUtterance) {
-    speechSynthesis.cancel();
-    currentUtterance = null;
-  }
+  console.log('TTS stopping progressive stream');
+  ttsBuffer = '';
+  queued = 0;
+  synth.cancel();
+  currentProgressiveStream = null;
 }
 document.addEventListener('touchstart', () => { try { speechSynthesis.cancel(); } catch(_){} }, { once:true });
 if ('speechSynthesis' in window) {
@@ -493,13 +478,8 @@ async function sendToJetsonStream(userText, server, payload) {
                   speakProgressive(content);
                   
                 } else if (data.type === 'done') {
-                  // Streaming complete - speak any remaining text
-                  if (accumulatedText && lastSpokenIndex < accumulatedText.length) {
-                    const remainingText = accumulatedText.substring(lastSpokenIndex).trim();
-                    if (remainingText) {
-                      speak(remainingText);
-                    }
-                  }
+                  // Streaming complete - finalize any remaining text
+                  finalizeProgressiveTTS();
                   
                   if (currentBubble) {
                     finalizeStreamingBubble(currentBubble);
