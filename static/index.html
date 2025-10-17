@@ -447,7 +447,8 @@ async function sendToJetsonStream(userText, server, payload) {
       function readStream() {
         reader.read().then(({ done, value }) => {
           if (done) {
-            // Add final assistant message to history (user message already added in sendBtn.onclick)
+            // Add both user and assistant messages to history when complete
+            history.push({ role:"user", content:userText });
             history.push({ role:"assistant", content:fullReply });
             localStorage.setItem('history', JSON.stringify(history));
             resolve(fullReply);
@@ -550,7 +551,8 @@ sendBtn.onclick = async () => {
       appendBubble('assistant', reply);
       speak(reply);
       
-      // Add assistant message to history
+      // Add both user and assistant messages to history when complete
+      history.push({ role:"user", content:text });
       history.push({ role:"assistant", content:reply });
       localStorage.setItem('history', JSON.stringify(history));
     }
