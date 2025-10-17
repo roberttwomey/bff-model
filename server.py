@@ -94,6 +94,7 @@ if __name__ == "__main__":
     ssl_keyfile = "key.pem"
     ssl_certfile = "cert.pem"
     
+    print("should be checking here")
     if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
         print(f"[HTTPS] Starting server with SSL certificate")
         uvicorn.run(
