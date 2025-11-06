@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
-  <title>SNAPPER</title>
+  <title>SNAPPER Chat</title>
   <style>
     :root { color-scheme: dark; }
     body { margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:#0b0c0f; color:#e7e7ea; }
@@ -35,7 +35,7 @@
     .footer .wrap {
       position: relative;
     }
-    .footer .row { gap:6px; }
+    .footer .row { gap:6px; justify-content: space-between; }
     .text-input-group {
       display: none;
       flex: 1 1 auto;
@@ -51,19 +51,41 @@
       flex: 0 0 auto;
     }
     .pencil-btn {
-      position: absolute;
-      right: 8px;
-      top: 8px;
       font-size: 10px;
-      padding: 4px 6px;
+      padding: 4px !important;
       min-width: auto;
       width: auto;
       height: auto;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      aspect-ratio: 1;
+      flex: 0 0 auto !important;
+      line-height: 1;
+      flex-shrink: 0;
+      flex-grow: 0;
     }
     .pill { font-size:12px; opacity:0.9; padding:6px 8px; border-radius:99px; border:1px solid #2a2e36; }
-    .vad.on { background:#0d5; color:#031; border-color:#0b4; }
+    .vad.on { background:#d00; color:#fff; border-color:#a00; }
     .vad.off { background:#555; color:#ddd; border-color:#333; }
-    .vad.state { font-weight:600; }
+    .vad.mic-btn {
+      font-size: 10px;
+      padding: 4px !important;
+      min-width: auto;
+      width: auto;
+      height: auto;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      aspect-ratio: 1;
+      font-weight: normal;
+      flex: 0 0 auto !important;
+      line-height: 1;
+      flex-shrink: 0;
+      flex-grow: 0;
+    }
     .hint { font-size:12px; opacity:0.8; margin-top:6px; }
     .small { font-size:12px; opacity:0.7; }
     .tts-row { gap:8px; margin-top:8px; align-items:center; }
@@ -119,8 +141,7 @@
 <body>
   <div class="wrap">
     <header>
-      <strong>SNAPPER Chat</strong>
-      <button id="vadState" class="pill vad state off" style="cursor:pointer;">Idle</button>
+      <strong>SNAPPER</strong>
       <div class="settings-menu">
         <button id="settingsToggle" class="pill">⚙️</button>
         <div id="settingsDropdown" class="settings-dropdown">
@@ -174,11 +195,12 @@
   <div class="footer">
     <div class="wrap">
       <div class="row">
-        <button id="toggleKeyboard" class="pill pencil-btn">✏️</button>
+        <button id="vadState" class="pill vad state off mic-btn" style="cursor:pointer;">🎤</button>
         <div id="textInputGroup" class="text-input-group">
           <input id="text" placeholder="Type message…" />
           <button id="send">Send</button>
         </div>
+        <button id="toggleKeyboard" class="pill pencil-btn">✏️</button>
       </div>
       <div class="hint" id="hint">Status: not listening.</div>
     </div>
@@ -365,10 +387,10 @@ let queued = 0;
 let currentProgressiveStream = null;
 
 // Progressive TTS constants
-const MIN_CHUNK = 40;   // start speaking once we have ~a short phrase
-const MAX_CHUNK = 140;  // hard cap to avoid overlong chunks
+const MIN_CHUNK = 100;   // start speaking once we have ~a short phrase (reduced for lower latency)
+const MAX_CHUNK = 200;  // hard cap to avoid overlong chunks (increased for smoother flow)
 const PUNCT_PATTERN = /([.!?…]|[\n\r])(?=\s|$)/g;
-const QUEUE_LIMIT = 3;  // keep the synth queue short for low latency
+const QUEUE_LIMIT = 5;  // keep the synth queue short for low latency (increased to reduce cancellations)
 
 function speak(text) {
   try {
@@ -407,18 +429,23 @@ function enqueue(text) {
 function maybeFlush(force = false) {
   if (!ttsBuffer.trim()) return;
   
-  // Prefer to cut at the last sentence-ish boundary
   let cutIdx = -1;
-  if (ttsBuffer.length >= MIN_CHUNK) {
-    let m, last = -1;
-    PUNCT_PATTERN.lastIndex = 0; // Reset regex state
-    while ((m = PUNCT_PATTERN.exec(ttsBuffer)) !== null) {
-      last = m.index + m[0].length;
-    }
-    if (last > 0) cutIdx = last;
-    if (cutIdx < 0 && (force || ttsBuffer.length >= MAX_CHUNK)) {
-      cutIdx = Math.min(ttsBuffer.length, MAX_CHUNK);
-    }
+  
+  // First priority: Check for complete sentences (speak immediately, no MIN_CHUNK wait)
+  let m, last = -1;
+  PUNCT_PATTERN.lastIndex = 0; // Reset regex state
+  while ((m = PUNCT_PATTERN.exec(ttsBuffer)) !== null) {
+    last = m.index + m[0].length;
+  }
+  if (last > 0) {
+    // Found a sentence boundary - speak it immediately
+    cutIdx = last;
+  } else if (force || ttsBuffer.length >= MAX_CHUNK) {
+    // No sentence found: cut at MAX_CHUNK if forced or buffer too long
+    cutIdx = Math.min(ttsBuffer.length, MAX_CHUNK);
+  } else if (ttsBuffer.length >= MIN_CHUNK) {
+    // No sentence found but past MIN_CHUNK: cut to avoid waiting too long
+    cutIdx = Math.min(ttsBuffer.length, MIN_CHUNK * 2);
   }
   
   if (cutIdx > 0) {
@@ -847,9 +874,9 @@ async function initVAD() {
 }
 
 function setVADState(label, on) {
-  vadStatePill.textContent = label;
   vadStatePill.classList.toggle('on', on);
   vadStatePill.classList.toggle('off', !on);
+  // Keep microphone icon, don't change text
 }
 
 function pickMimeType() {

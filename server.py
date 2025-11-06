@@ -12,7 +12,7 @@ import threading
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
 # DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3n:e2b")
 
 # Whisper config
 WHISPER_SIZE   = os.environ.get("WHISPER_SIZE", "tiny.en")  # tiny.en/base.en/small.en/…

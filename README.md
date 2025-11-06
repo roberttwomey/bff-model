@@ -129,9 +129,17 @@ Configure the server using these environment variables:
 
 ```bash
 export OLLAMA_URL="http://localhost:11434/api/chat"
-export OLLAMA_MODEL="gemma3:4b"
+export OLLAMA_MODEL="gemma3n:e2b"
 export WHISPER_SIZE="tiny.en"
 export WHISPER_DEVICE="cpu"
+```
+
+on jetson orin nano:
+```bash
+export OLLAMA_URL="http://localhost:11434/api/chat"
+export OLLAMA_MODEL="gemma3n:e2b"
+export WHISPER_SIZE="tiny.en"
+export WHISPER_DEVICE="gpu"
 ```
 
 ## Testing
