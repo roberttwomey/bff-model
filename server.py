@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 import httpx, os, tempfile, json, asyncio
 from pathlib import Path
 from faster_whisper import WhisperModel
+from datetime import datetime
+import threading
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
 # DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
@@ -28,6 +30,37 @@ app.add_middleware(
 
 # Serve frontend from ./static
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
+
+# ---------- Chat Logging ----------
+LOG_DIR = Path.home() / "bff" / "data"
+SESSION_START_TIME = datetime.now()
+SESSION_ID = SESSION_START_TIME.strftime("%Y%m%d_%H%M%S")
+LOG_FILE = LOG_DIR / f"chat_session_{SESSION_ID}.jsonl"
+LOG_LOCK = threading.Lock()
+
+# Create log directory if it doesn't exist
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Write session start info
+with open(LOG_FILE, "w") as f:
+    session_info = {
+        "session_id": SESSION_ID,
+        "start_time": SESSION_START_TIME.isoformat(),
+        "type": "session_start"
+    }
+    f.write(json.dumps(session_info) + "\n")
+
+def log_chat(message_data: dict):
+    """Log chat message to session file"""
+    log_entry = {
+        "timestamp": datetime.now().isoformat(),
+        **message_data
+    }
+    with LOG_LOCK:
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+
+print(f"[LOG] Chat logging enabled: {LOG_FILE}")
 
 # ---------- Models ----------
 class Message(BaseModel):
@@ -65,11 +98,27 @@ async def get_models():
 async def chat(payload: ChatIn):
     model = payload.model or DEFAULT_MODEL
     body = {"model": model, "messages": [m.dict() for m in payload.messages], "stream": False}
+    
+    # Log incoming messages
+    log_chat({
+        "type": "chat_request",
+        "model": model,
+        "messages": [m.dict() for m in payload.messages]
+    })
+    
     async with httpx.AsyncClient(timeout=300.0) as client:
         r = await client.post(OLLAMA_URL, json=body)
         r.raise_for_status()
         data = r.json()
     reply = (data.get("message") or {}).get("content", "")
+    
+    # Log reply
+    log_chat({
+        "type": "chat_response",
+        "model": model,
+        "reply": reply
+    })
+    
     return JSONResponse({"reply": reply})
 
 @app.post("/chat/stream")
@@ -78,7 +127,17 @@ async def chat_stream(payload: ChatIn):
     model = payload.model or DEFAULT_MODEL
     body = {"model": model, "messages": [m.dict() for m in payload.messages], "stream": True}
     
+    # Log incoming messages
+    log_chat({
+        "type": "chat_stream_request",
+        "model": model,
+        "messages": [m.dict() for m in payload.messages]
+    })
+    
+    full_reply = ""
+    
     async def generate():
+        nonlocal full_reply
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with client.stream("POST", OLLAMA_URL, json=body) as response:
                 response.raise_for_status()
@@ -91,16 +150,28 @@ async def chat_stream(payload: ChatIn):
                             done = data.get("done", False)
                             
                             if content:
+                                full_reply += content
                                 # Send content as SSE
                                 yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
                             
                             if done:
+                                # Log complete reply after streaming is done
+                                log_chat({
+                                    "type": "chat_stream_response",
+                                    "model": model,
+                                    "reply": full_reply
+                                })
                                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                                 break
                                 
                         except json.JSONDecodeError:
                             continue
                         except Exception as e:
+                            log_chat({
+                                "type": "chat_stream_error",
+                                "model": model,
+                                "error": str(e)
+                            })
                             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
                             break
     
