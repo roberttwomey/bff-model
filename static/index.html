@@ -215,7 +215,7 @@ const storage = {
   set model(v){ localStorage.setItem('model', v); },
   get stream(){ return localStorage.getItem('stream') !== 'false'; },
   set stream(v){ localStorage.setItem('stream', String(v)); },
-  get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'you are a robot dog, SNAPPER, interested in conversation with the user. you do not say woof, whir, tail wag, etc. just conversation and words. keep your answers to 2 sentences or less.'; },
+  get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'you are SNAPPER a robot dog. you do not say woof, whir, tail wag, or etc.  answer in 2 sentences or less.'; },
   set systemPrompt(v){ localStorage.setItem('systemPrompt', v); },
   get history(){ try{ return JSON.parse(localStorage.getItem('history')||'[]'); } catch{ return []; } },
   set history(v){ localStorage.setItem('history', JSON.stringify(v)); },
@@ -223,7 +223,7 @@ const storage = {
   set speak(v){ localStorage.setItem('speak', String(v)); },
   get voiceURI(){ return localStorage.getItem('voiceURI') || ''; },
   set voiceURI(v){ localStorage.setItem('voiceURI', v); },
-  get rate(){ return parseFloat(localStorage.getItem('rate') || '1.0'); },
+  get rate(){ return parseFloat(localStorage.getItem('rate') || '1.2'); },
   set rate(v){ localStorage.setItem('rate', String(v)); },
   get pitch(){ return parseFloat(localStorage.getItem('pitch') || '1.0'); },
   set pitch(v){ localStorage.setItem('pitch', String(v)); },
@@ -358,7 +358,7 @@ function speak(text) {
     const u = new SpeechSynthesisUtterance(text);
     const v = currentVoice();
     if (v) u.voice = v;
-    u.rate  = parseFloat(rateSlider.value || '1.0');
+    u.rate  = parseFloat(rateSlider.value || '1.2');
     u.pitch = parseFloat(pitchSlider.value || '1.0');
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
@@ -368,7 +368,7 @@ function speak(text) {
 function makeUtterance(text, voice) {
   const u = new SpeechSynthesisUtterance(text);
   if (voice) u.voice = voice;
-  u.rate = parseFloat(rateSlider.value || '1.0');
+  u.rate = parseFloat(rateSlider.value || '1.2');
   u.pitch = parseFloat(pitchSlider.value || '1.0');
   return u;
 }
