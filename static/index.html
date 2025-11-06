@@ -470,6 +470,21 @@ rateSlider.oninput  = () => { rateVal.textContent  = parseFloat(rateSlider.value
 pitchSlider.oninput = () => { pitchVal.textContent = parseFloat(pitchSlider.value).toFixed(2); storage.pitch = parseFloat(pitchSlider.value); };
 
 /* ------------------------- Chat UI ------------------------- */
+function scrollToBottom(smooth = false) {
+  // Use requestAnimationFrame to ensure DOM updates are complete
+  requestAnimationFrame(() => {
+    // Try scrolling the chat container first
+    if (chatEl.scrollHeight > chatEl.clientHeight) {
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+    // Also scroll the window to ensure the latest message is visible
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto'
+    });
+  });
+}
+
 function renderAll(){
   chatEl.innerHTML = "";
   history.forEach((msg) => {
@@ -477,7 +492,7 @@ function renderAll(){
       appendBubble(msg.role, msg.content);
     }
   });
-  chatEl.scrollTop = chatEl.scrollHeight;
+  scrollToBottom();
 }
 function appendBubble(role, text){
   const div = document.createElement('div');
@@ -492,7 +507,7 @@ function appendBubble(role, text){
     div.appendChild(b);
   }
   chatEl.appendChild(div);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  scrollToBottom();
 }
 
 /* ------------------------- Networking ------------------------- */
@@ -610,13 +625,14 @@ function createStreamingBubble() {
   div.className = 'bubble bot streaming';
   div.textContent = '';
   chatEl.appendChild(div);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  scrollToBottom();
   return div;
 }
 
 function updateStreamingBubble(bubble, content) {
   bubble.textContent = content;
-  chatEl.scrollTop = chatEl.scrollHeight;
+  // Use instant scrolling for streaming updates to keep up with rapid changes
+  scrollToBottom(false);
 }
 
 function finalizeStreamingBubble(bubble) {
@@ -629,6 +645,8 @@ function finalizeStreamingBubble(bubble) {
   b.textContent = '🔊';
   b.onclick = (e) => { e.stopPropagation(); speak(bubble.textContent); };
   bubble.appendChild(b);
+  // Use smooth scrolling when finalizing for a nice finish
+  scrollToBottom(true);
 }
 sendBtn.onclick = async () => {
   const text = txtEl.value.trim();
