@@ -121,7 +121,7 @@ const storage = {
   set server(v){ localStorage.setItem('server', v); },
   get model(){ return localStorage.getItem('model') || ''; },
   set model(v){ localStorage.setItem('model', v); },
-  get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'You are SNAPPER, a robot dog and companion.'; },
+  get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'you are a robot dog, SNAPPER, interested in conversation with the user. you do not say woof, whir, tail wag, etc. just conversation and words. keep your answers to 2 sentences or less.'; },
   set systemPrompt(v){ localStorage.setItem('systemPrompt', v); },
   get history(){ try{ return JSON.parse(localStorage.getItem('history')||'[]'); } catch{ return []; } },
   set history(v){ localStorage.setItem('history', JSON.stringify(v)); },
@@ -230,6 +230,7 @@ function currentVoice() {
 function stopSpeaking() {
   try {
     speechSynthesis.cancel();
+    interruptedTtsText = null; // Clear interrupted text when explicitly stopping
   } catch (e) {}
 }
 
@@ -241,8 +242,22 @@ function speak(text) {
     if (v) u.voice = v;
     u.rate  = parseFloat(rateSlider.value || '1.0');
     u.pitch = parseFloat(pitchSlider.value || '1.0');
+    
+    // Clear interrupted text when starting new speech
+    interruptedTtsText = null;
+    
+    // Track when TTS ends naturally (not interrupted)
+    u.onend = () => {
+      interruptedTtsText = null;
+    };
+    u.onerror = () => {
+      interruptedTtsText = null;
+    };
+    
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
+    // Track the text being spoken so we can restart it if interrupted by short VAD
+    interruptedTtsText = text;
   } catch (e) {}
 }
 document.addEventListener('touchstart', () => { try { speechSynthesis.cancel(); } catch(_){} }, { once:true });
@@ -372,6 +387,7 @@ const VAD_CFG = {
   startFrames: 3,      // need N consecutive frames above startDb
   stopFrames:  15,     // need N consecutive frames below stopDb (~600ms at 40ms hop)
   minSpeakMs: 400,     // ignore too-short bursts
+  shortSampleMs: 1000, // if VAD sample is shorter than this, restart TTS
 };
 
 let ac = null;
@@ -390,6 +406,7 @@ let speechFrames = 0;
 let silenceFrames = 0;
 let recordingActive = false;
 let utterStartTs = 0;
+let interruptedTtsText = null; // Track text that was interrupted by VAD
 
 function dbfs_of_frame(buf) {
   let sum = 0;
@@ -445,7 +462,14 @@ function startRecordingNow() {
   if (recordingActive) return;
   
   // Stop any ongoing TTS when user starts speaking
-  stopSpeaking();
+  // Use speechSynthesis.cancel() directly to preserve interruptedTtsText
+  // (don't use stopSpeaking() as it clears interruptedTtsText)
+  if (speaking) {
+    try {
+      speechSynthesis.cancel();
+    } catch (e) {}
+  }
+  // Note: Keep interruptedTtsText so we can restart if VAD sample is short
   
   recChunks = [];
   recorder.start();
@@ -460,11 +484,24 @@ function stopRecordingNow() {
   recordingActive = false;
   try { recorder.stop(); } catch {}
   setVADState('Processing…', true);
-  hintEl.textContent = 'Transcribing…';
+  hintEl.textContent = 'Responding…';
 }
 
 async function onRecordingStop() {
-  // Send to /stt (Whisper)
+  // Check if this was a very short VAD sample that interrupted TTS
+  const recordingDuration = performance.now() - utterStartTs;
+  const wasShortSample = interruptedTtsText && recordingDuration < VAD_CFG.shortSampleMs;
+  
+  // If VAD sample was very short and interrupted TTS, restart the TTS instead of processing
+  if (wasShortSample) {
+    speak(interruptedTtsText);
+    interruptedTtsText = null;
+    setVADState('Listening', true);
+    hintEl.textContent = 'Listening…';
+    return;
+  }
+  
+  // Send to /stt (Whisper) for normal-length samples
   try {
     const blob = new Blob(recChunks, { type: recMime || recChunks[0]?.type || 'audio/webm' });
     const fd = new FormData();
@@ -484,6 +521,8 @@ async function onRecordingStop() {
   } catch (e) {
     appendBubble('system', 'STT error: ' + e.message);
   } finally {
+    // Clear interrupted text
+    interruptedTtsText = null;
     // Return to listening
     setVADState('Listening', true);
     hintEl.textContent = 'Listening…';
@@ -504,9 +543,13 @@ function pollVAD() {
     if (db > VAD_CFG.startDb) {
       speechFrames++;
       if (speechFrames >= VAD_CFG.startFrames) {
+        // Store interrupted TTS text before stopping (if TTS was active)
+        if (speaking && interruptedTtsText) {
+          // Keep the interrupted text so we can restart if VAD sample is short
+        }
         // Stop TTS immediately when speech is detected
         if (speaking) {
-          stopSpeaking();
+          speechSynthesis.cancel(); // Don't use stopSpeaking() as it clears interruptedTtsText
         }
         startRecordingNow();
         speechFrames = 0;
