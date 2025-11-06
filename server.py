@@ -1,10 +1,10 @@
 # server.py
 from fastapi import FastAPI, Request, UploadFile, File
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-import httpx, os, tempfile
+import httpx, os, tempfile, json, asyncio
 from pathlib import Path
 from faster_whisper import WhisperModel
 
@@ -71,6 +71,49 @@ async def chat(payload: ChatIn):
         data = r.json()
     reply = (data.get("message") or {}).get("content", "")
     return JSONResponse({"reply": reply})
+
+@app.post("/chat/stream")
+async def chat_stream(payload: ChatIn):
+    """Stream chat responses from Ollama as Server-Sent Events"""
+    model = payload.model or DEFAULT_MODEL
+    body = {"model": model, "messages": [m.dict() for m in payload.messages], "stream": True}
+    
+    async def generate():
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream("POST", OLLAMA_URL, json=body) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.strip():
+                        try:
+                            # Parse each line as JSON
+                            data = json.loads(line)
+                            content = data.get("message", {}).get("content", "")
+                            done = data.get("done", False)
+                            
+                            if content:
+                                # Send content as SSE
+                                yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                            
+                            if done:
+                                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                                break
+                                
+                        except json.JSONDecodeError:
+                            continue
+                        except Exception as e:
+                            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+                            break
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 # ---------- Whisper STT ----------
 print(f"[STT] Loading faster-whisper: {WHISPER_SIZE} on {WHISPER_DEVICE} ({COMPUTE_TYPE})")

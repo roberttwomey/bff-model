@@ -22,6 +22,7 @@
     }
     .me  { align-self:flex-end; background:#2a2e36; }
     .bot { align-self:flex-start; background:#1a1d24; }
+    .bot.streaming { background:#1a2d24; border:1px solid #0d4; }
     .sys { align-self:center; opacity:0.8; font-size:12px; }
     .speak-btn {
       position:absolute; right:8px; bottom:8px; font-size:14px; opacity:0.8;
@@ -31,7 +32,34 @@
       position:fixed; bottom:0; left:0; right:0; background:rgba(11,12,15,0.95); backdrop-filter:blur(6px);
       border-top:1px solid #2a2e36; padding:8px;
     }
+    .footer .wrap {
+      position: relative;
+    }
     .footer .row { gap:6px; }
+    .text-input-group {
+      display: none;
+      flex: 1 1 auto;
+      gap: 6px;
+    }
+    .text-input-group.show {
+      display: flex;
+    }
+    .text-input-group input {
+      flex: 1;
+    }
+    .text-input-group button {
+      flex: 0 0 auto;
+    }
+    .pencil-btn {
+      position: absolute;
+      right: 8px;
+      top: 8px;
+      font-size: 10px;
+      padding: 4px 6px;
+      min-width: auto;
+      width: auto;
+      height: auto;
+    }
     .pill { font-size:12px; opacity:0.9; padding:6px 8px; border-radius:99px; border:1px solid #2a2e36; }
     .vad.on { background:#0d5; color:#031; border-color:#0b4; }
     .vad.off { background:#555; color:#ddd; border-color:#333; }
@@ -42,6 +70,50 @@
     .tts-row > * { flex:0 0 auto; }
     label { font-size:12px; opacity:0.9; }
     .slider { width:120px; }
+    .settings-menu {
+      position: relative;
+      display: inline-block;
+    }
+    .settings-button {
+      background: #14161b;
+      color: #e7e7ea;
+      border: 1px solid #2a2e36;
+      border-radius: 12px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .settings-dropdown {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 8px;
+      background: #14161b;
+      border: 1px solid #2a2e36;
+      border-radius: 12px;
+      padding: 16px;
+      min-width: 400px;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .settings-dropdown.show {
+      display: block;
+    }
+    .settings-section {
+      margin-bottom: 16px;
+    }
+    .settings-section:last-child {
+      margin-bottom: 0;
+    }
+    .settings-section-title {
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0.8;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
   </style>
 </head>
 <body>
@@ -49,37 +121,53 @@
     <header>
       <strong>Jetson LLM Voice Chat</strong>
       <span class="pill">VAD</span>
-      <span id="vadState" class="pill vad state off">Idle</span>
+      <button id="vadState" class="pill vad state off" style="cursor:pointer;">Idle</button>
+      <div class="settings-menu">
+        <button id="settingsToggle" class="settings-button">⚙️ Settings</button>
+        <div id="settingsDropdown" class="settings-dropdown">
+          <div class="settings-section">
+            <div class="settings-section-title">Server & Model</div>
+            <div class="row" style="margin-bottom:8px">
+              <input id="server" placeholder="Server (e.g., http://192.168.4.23:8000)" />
+            </div>
+            <div class="row" style="margin-bottom:8px">
+              <select id="modelSelect">
+                <option value="">Loading models...</option>
+              </select>
+              <label><input type="checkbox" id="streamToggle" checked /> 🌊 Stream</label>
+              <button id="save">Save</button>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">System Prompt</div>
+            <div class="row" style="margin-bottom:8px">
+              <input id="systemPrompt" placeholder="System prompt (e.g., You are a helpful assistant...)" style="flex: 1;" />
+              <button id="savePrompt">Save Prompt</button>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Text-to-Speech</div>
+            <div class="row tts-row">
+              <label><input type="checkbox" id="speakToggle" checked /> 🔊 Speak replies</label>
+              <label>Voice:
+                <select id="voiceSelect"></select>
+              </label>
+              <label>Rate:
+                <input id="rate" class="slider" type="range" min="0.6" max="1.4" step="0.05" value="1.2">
+                <span id="rateVal" class="small">1.20</span>
+              </label>
+              <label>Pitch:
+                <input id="pitch" class="slider" type="range" min="0.6" max="1.6" step="0.05" value="1.0">
+                <span id="pitchVal" class="small">1.00</span>
+              </label>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="small">Tap "🎤 Start VAD" once to grant mic permission. The page will listen, auto-start on voice, and auto-stop on silence (~0.6–1s).</div>
+          </div>
+        </div>
+      </div>
     </header>
-
-    <div class="row" style="margin-bottom:8px">
-      <input id="server" placeholder="Server (e.g., http://192.168.4.23:8000)" />
-      <select id="modelSelect">
-        <option value="">Loading models...</option>
-      </select>
-      <button id="save">Save</button>
-    </div>
-    <div class="row" style="margin-bottom:8px">
-      <input id="systemPrompt" placeholder="System prompt (e.g., You are a helpful assistant...)" style="flex: 1;" />
-      <button id="savePrompt">Save Prompt</button>
-    </div>
-    <div class="small">Tap “🎤 Start VAD” once to grant mic permission. The page will listen, auto-start on voice, and auto-stop on silence (~0.6–1s).</div>
-
-    <!-- TTS controls -->
-    <div class="row tts-row">
-      <label><input type="checkbox" id="speakToggle" checked /> 🔊 Speak replies</label>
-      <label>Voice:
-        <select id="voiceSelect"></select>
-      </label>
-      <label>Rate:
-        <input id="rate" class="slider" type="range" min="0.6" max="1.4" step="0.05" value="1.0">
-        <span id="rateVal" class="small">1.00</span>
-      </label>
-      <label>Pitch:
-        <input id="pitch" class="slider" type="range" min="0.6" max="1.6" step="0.05" value="1.0">
-        <span id="pitchVal" class="small">1.00</span>
-      </label>
-    </div>
 
     <div id="chat" class="chat"></div>
   </div>
@@ -87,9 +175,11 @@
   <div class="footer">
     <div class="wrap">
       <div class="row">
-        <button id="toggleVAD" class="pill vad off">🎤 Start VAD</button>
-        <input id="text" placeholder="Type message…" />
-        <button id="send">Send</button>
+        <button id="toggleKeyboard" class="pill pencil-btn">✏️</button>
+        <div id="textInputGroup" class="text-input-group">
+          <input id="text" placeholder="Type message…" />
+          <button id="send">Send</button>
+        </div>
       </div>
       <div class="hint" id="hint">Status: not listening.</div>
     </div>
@@ -101,15 +191,18 @@ const el = (id) => document.getElementById(id);
 const chatEl   = el('chat');
 const srvEl    = el('server');
 const modelSelect = el('modelSelect');
+const streamToggle = el('streamToggle');
 const systemPromptEl = el('systemPrompt');
 const saveBtn  = el('save');
 const savePromptBtn = el('savePrompt');
 const txtEl    = el('text');
 const sendBtn  = el('send');
-const hintEl   = el('hint');
-
-const toggleVADBtn = el('toggleVAD');
 const vadStatePill = el('vadState');
+const hintEl = el('hint');
+const settingsToggle = el('settingsToggle');
+const settingsDropdown = el('settingsDropdown');
+const toggleKeyboardBtn = el('toggleKeyboard');
+const textInputGroup = el('textInputGroup');
 
 const speakToggle = el('speakToggle');
 const voiceSelect = el('voiceSelect');
@@ -121,6 +214,8 @@ const storage = {
   set server(v){ localStorage.setItem('server', v); },
   get model(){ return localStorage.getItem('model') || ''; },
   set model(v){ localStorage.setItem('model', v); },
+  get stream(){ return localStorage.getItem('stream') !== 'false'; },
+  set stream(v){ localStorage.setItem('stream', String(v)); },
   get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'you are a robot dog, SNAPPER, interested in conversation with the user. you do not say woof, whir, tail wag, etc. just conversation and words. keep your answers to 2 sentences or less.'; },
   set systemPrompt(v){ localStorage.setItem('systemPrompt', v); },
   get history(){ try{ return JSON.parse(localStorage.getItem('history')||'[]'); } catch{ return []; } },
@@ -137,6 +232,7 @@ const storage = {
 
 srvEl.value = storage.server;
 systemPromptEl.value = storage.systemPrompt;
+streamToggle.checked = storage.stream;
 
 let history = storage.history.length ? storage.history : [
   { role: "system", content: storage.systemPrompt }
@@ -159,13 +255,20 @@ async function loadModels() {
       modelSelect.appendChild(option);
     });
     
-    // Set saved model if available
-    const savedModel = storage.model;
-    if (savedModel && data.models.includes(savedModel)) {
-      modelSelect.value = savedModel;
-    } else if (data.models.length > 0) {
-      modelSelect.value = data.models[0];
-      storage.model = data.models[0];
+    // Always select gemma3n:e4b initially if available
+    const preferredModel = 'gemma3n:e4b';
+    if (data.models.includes(preferredModel)) {
+      modelSelect.value = preferredModel;
+      storage.model = preferredModel;
+    } else {
+      // Fallback to saved model or first model
+      const savedModel = storage.model;
+      if (savedModel && data.models.includes(savedModel)) {
+        modelSelect.value = savedModel;
+      } else if (data.models.length > 0) {
+        modelSelect.value = data.models[0];
+        storage.model = data.models[0];
+      }
     }
   } catch (error) {
     console.error('Failed to load models:', error);
@@ -183,6 +286,11 @@ loadModels();
 // Save model selection when changed
 modelSelect.addEventListener('change', () => {
   storage.model = modelSelect.value;
+});
+
+// Save stream setting when changed
+streamToggle.addEventListener('change', () => {
+  storage.stream = streamToggle.checked;
 });
 
 // Auto-save system prompt when changed (with debounce)
@@ -230,9 +338,20 @@ function currentVoice() {
 function stopSpeaking() {
   try {
     speechSynthesis.cancel();
-    interruptedTtsText = null; // Clear interrupted text when explicitly stopping
   } catch (e) {}
 }
+
+// Progressive TTS state - using the robust streaming pattern
+const synth = window.speechSynthesis;
+let ttsBuffer = '';
+let queued = 0;
+let currentProgressiveStream = null;
+
+// Progressive TTS constants
+const MIN_CHUNK = 40;   // start speaking once we have ~a short phrase
+const MAX_CHUNK = 140;  // hard cap to avoid overlong chunks
+const PUNCT_PATTERN = /([.!?…]|[\n\r])(?=\s|$)/g;
+const QUEUE_LIMIT = 3;  // keep the synth queue short for low latency
 
 function speak(text) {
   try {
@@ -242,23 +361,101 @@ function speak(text) {
     if (v) u.voice = v;
     u.rate  = parseFloat(rateSlider.value || '1.0');
     u.pitch = parseFloat(pitchSlider.value || '1.0');
-    
-    // Clear interrupted text when starting new speech
-    interruptedTtsText = null;
-    
-    // Track when TTS ends naturally (not interrupted)
-    u.onend = () => {
-      interruptedTtsText = null;
-    };
-    u.onerror = () => {
-      interruptedTtsText = null;
-    };
-    
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
-    // Track the text being spoken so we can restart it if interrupted by short VAD
-    interruptedTtsText = text;
   } catch (e) {}
+}
+
+function makeUtterance(text, voice) {
+  const u = new SpeechSynthesisUtterance(text);
+  if (voice) u.voice = voice;
+  u.rate = parseFloat(rateSlider.value || '1.0');
+  u.pitch = parseFloat(pitchSlider.value || '1.0');
+  return u;
+}
+
+function enqueue(text) {
+  if (!text.trim()) return;
+  
+  const voice = currentVoice();
+  const u = makeUtterance(text, voice);
+  queued++;
+  u.onend = () => queued--;
+  u.onerror = () => queued--;
+  synth.speak(u);
+  
+  console.log('TTS enqueued:', text, 'queue size:', queued);
+}
+
+function maybeFlush(force = false) {
+  if (!ttsBuffer.trim()) return;
+  
+  // Prefer to cut at the last sentence-ish boundary
+  let cutIdx = -1;
+  if (ttsBuffer.length >= MIN_CHUNK) {
+    let m, last = -1;
+    PUNCT_PATTERN.lastIndex = 0; // Reset regex state
+    while ((m = PUNCT_PATTERN.exec(ttsBuffer)) !== null) {
+      last = m.index + m[0].length;
+    }
+    if (last > 0) cutIdx = last;
+    if (cutIdx < 0 && (force || ttsBuffer.length >= MAX_CHUNK)) {
+      cutIdx = Math.min(ttsBuffer.length, MAX_CHUNK);
+    }
+  }
+  
+  if (cutIdx > 0) {
+    const chunk = ttsBuffer.slice(0, cutIdx).trim();
+    ttsBuffer = ttsBuffer.slice(cutIdx);
+    
+    // backpressure: don't let the queue explode
+    if (queued >= QUEUE_LIMIT) {
+      console.log('TTS queue full, canceling and restarting');
+      synth.cancel(); 
+      queued = 0;
+    }
+    
+    if (chunk) enqueue(chunk);
+  }
+}
+
+function speakProgressive(newText) {
+  if (!speakToggle.checked || !newText) {
+    console.log('TTS skipped:', { speakToggle: speakToggle.checked, newText });
+    return;
+  }
+  
+  console.log('TTS progressive chunk:', newText);
+  
+  // Add new text to buffer
+  ttsBuffer += newText;
+  
+  // Try to flush at natural boundaries as text accumulates
+  maybeFlush(false);
+}
+
+function finalizeProgressiveTTS() {
+  // Flush what's left in the buffer
+  if (ttsBuffer.trim()) {
+    console.log('TTS finalizing remaining text:', ttsBuffer);
+    
+    // Split any long tail into manageable bits
+    while (ttsBuffer.length) {
+      maybeFlush(true);
+      if (ttsBuffer.length && ttsBuffer.length < MIN_CHUNK) {
+        enqueue(ttsBuffer);
+        ttsBuffer = "";
+      }
+    }
+  }
+}
+
+function stopProgressiveTTS() {
+  console.log('TTS stopping progressive stream');
+  ttsBuffer = '';
+  queued = 0;
+  synth.cancel();
+  currentProgressiveStream = null;
 }
 document.addEventListener('touchstart', () => { try { speechSynthesis.cancel(); } catch(_){} }, { once:true });
 if ('speechSynthesis' in window) {
@@ -276,7 +473,11 @@ pitchSlider.oninput = () => { pitchVal.textContent = parseFloat(pitchSlider.valu
 /* ------------------------- Chat UI ------------------------- */
 function renderAll(){
   chatEl.innerHTML = "";
-  history.forEach((msg) => appendBubble(msg.role, msg.content));
+  history.forEach((msg) => {
+    if (msg.role !== 'system') {
+      appendBubble(msg.role, msg.content);
+    }
+  });
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 function appendBubble(role, text){
@@ -302,6 +503,14 @@ async function sendToJetson(userText){
   const payload = { messages: history, model };
   payload.messages.push({ role: "user", content: userText });
 
+  if (streamToggle.checked) {
+    return await sendToJetsonStream(userText, server, payload);
+  } else {
+    return await sendToJetsonRegular(server, payload);
+  }
+}
+
+async function sendToJetsonRegular(server, payload) {
   const url = server + "/chat";
   const res = await fetch(url, {
     method: "POST",
@@ -311,10 +520,116 @@ async function sendToJetson(userText){
   if(!res.ok) throw new Error(await res.text());
   const data = await res.json();
   const reply = data.reply || "";
-  history.push({ role:"user", content:userText });
-  history.push({ role:"assistant", content:reply });
-  localStorage.setItem('history', JSON.stringify(history));
   return reply;
+}
+
+async function sendToJetsonStream(userText, server, payload) {
+  const url = server + "/chat/stream";
+  
+  return new Promise((resolve, reject) => {
+    // Reset TTS state for new response
+    stopProgressiveTTS();
+    
+    // Since EventSource doesn't support POST, we'll use fetch with streaming
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullReply = "";
+      let currentBubble = null;
+      
+      function readStream() {
+        reader.read().then(({ done, value }) => {
+          if (done) {
+            // Add both user and assistant messages to history when complete
+            history.push({ role:"user", content:userText });
+            history.push({ role:"assistant", content:fullReply });
+            localStorage.setItem('history', JSON.stringify(history));
+            resolve(fullReply);
+            return;
+          }
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                
+                if (data.type === 'content') {
+                  const content = data.content;
+                  console.log('Stream content received:', content);
+                  fullReply += content;
+                  
+                  // Create or update streaming bubble
+                  if (!currentBubble) {
+                    currentBubble = createStreamingBubble();
+                  }
+                  updateStreamingBubble(currentBubble, fullReply);
+                  
+                  // Speak the new content progressively
+                  speakProgressive(content);
+                  
+                } else if (data.type === 'done') {
+                  // Streaming complete - finalize any remaining text
+                  finalizeProgressiveTTS();
+                  
+                  if (currentBubble) {
+                    finalizeStreamingBubble(currentBubble);
+                  }
+                  
+                } else if (data.type === 'error') {
+                  reject(new Error(data.error));
+                  return;
+                }
+              } catch (e) {
+                // Skip malformed JSON
+                continue;
+              }
+            }
+          }
+          
+          readStream();
+        }).catch(reject);
+      }
+      
+      readStream();
+    }).catch(reject);
+  });
+}
+
+function createStreamingBubble() {
+  const div = document.createElement('div');
+  div.className = 'bubble bot streaming';
+  div.textContent = '';
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function updateStreamingBubble(bubble, content) {
+  bubble.textContent = content;
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function finalizeStreamingBubble(bubble) {
+  bubble.classList.remove('streaming');
+  
+  // Add speak button
+  const b = document.createElement('button');
+  b.className = 'speak-btn';
+  b.title = 'Speak this response';
+  b.textContent = '🔊';
+  b.onclick = (e) => { e.stopPropagation(); speak(bubble.textContent); };
+  bubble.appendChild(b);
 }
 sendBtn.onclick = async () => {
   const text = txtEl.value.trim();
@@ -322,13 +637,26 @@ sendBtn.onclick = async () => {
   
   // Stop any ongoing TTS when user submits new message
   stopSpeaking();
+  stopProgressiveTTS();
   
   txtEl.value = "";
   appendBubble('user', text);
+  
   try {
-    const reply = await sendToJetson(text);
-    appendBubble('assistant', reply);
-    speak(reply);
+    if (streamToggle.checked) {
+      // For streaming, the bubble is created and updated in sendToJetsonStream
+      await sendToJetson(text);
+    } else {
+      // For non-streaming, use the old approach
+      const reply = await sendToJetson(text);
+      appendBubble('assistant', reply);
+      speak(reply);
+      
+      // Add both user and assistant messages to history when complete
+      history.push({ role:"user", content:text });
+      history.push({ role:"assistant", content:reply });
+      localStorage.setItem('history', JSON.stringify(history));
+    }
   } catch(err){
     appendBubble('system', 'Error: ' + err.message);
   }
@@ -337,6 +665,7 @@ txtEl.addEventListener('keydown', (e) => {
   if(e.key === 'Enter') {
     // Stop TTS when user presses Enter to send message
     stopSpeaking();
+    stopProgressiveTTS();
     sendBtn.click(); 
   }
 });
@@ -344,6 +673,7 @@ txtEl.addEventListener('keydown', (e) => {
 // Stop TTS when user starts typing
 txtEl.addEventListener('input', () => {
   stopSpeaking();
+  stopProgressiveTTS();
 });
 saveBtn.onclick = () => {
   storage.server = srvEl.value;
@@ -387,7 +717,6 @@ const VAD_CFG = {
   startFrames: 3,      // need N consecutive frames above startDb
   stopFrames:  15,     // need N consecutive frames below stopDb (~600ms at 40ms hop)
   minSpeakMs: 400,     // ignore too-short bursts
-  shortSampleMs: 1000, // if VAD sample is shorter than this, restart TTS
 };
 
 let ac = null;
@@ -406,7 +735,6 @@ let speechFrames = 0;
 let silenceFrames = 0;
 let recordingActive = false;
 let utterStartTs = 0;
-let interruptedTtsText = null; // Track text that was interrupted by VAD
 
 function dbfs_of_frame(buf) {
   let sum = 0;
@@ -448,8 +776,6 @@ function setVADState(label, on) {
   vadStatePill.textContent = label;
   vadStatePill.classList.toggle('on', on);
   vadStatePill.classList.toggle('off', !on);
-  toggleVADBtn.classList.toggle('on', on);
-  toggleVADBtn.classList.toggle('off', !on);
 }
 
 function pickMimeType() {
@@ -462,14 +788,8 @@ function startRecordingNow() {
   if (recordingActive) return;
   
   // Stop any ongoing TTS when user starts speaking
-  // Use speechSynthesis.cancel() directly to preserve interruptedTtsText
-  // (don't use stopSpeaking() as it clears interruptedTtsText)
-  if (speaking) {
-    try {
-      speechSynthesis.cancel();
-    } catch (e) {}
-  }
-  // Note: Keep interruptedTtsText so we can restart if VAD sample is short
+  stopSpeaking();
+  stopProgressiveTTS();
   
   recChunks = [];
   recorder.start();
@@ -488,20 +808,7 @@ function stopRecordingNow() {
 }
 
 async function onRecordingStop() {
-  // Check if this was a very short VAD sample that interrupted TTS
-  const recordingDuration = performance.now() - utterStartTs;
-  const wasShortSample = interruptedTtsText && recordingDuration < VAD_CFG.shortSampleMs;
-  
-  // If VAD sample was very short and interrupted TTS, restart the TTS instead of processing
-  if (wasShortSample) {
-    speak(interruptedTtsText);
-    interruptedTtsText = null;
-    setVADState('Listening', true);
-    hintEl.textContent = 'Listening…';
-    return;
-  }
-  
-  // Send to /stt (Whisper) for normal-length samples
+  // Send to /stt (Whisper)
   try {
     const blob = new Blob(recChunks, { type: recMime || recChunks[0]?.type || 'audio/webm' });
     const fd = new FormData();
@@ -512,17 +819,27 @@ async function onRecordingStop() {
     const { text } = await res.json();
     if (text && text.trim().length) {
       appendBubble('user', text.trim());
-      const reply = await sendToJetson(text.trim());
-      appendBubble('assistant', reply);
-      speak(reply);
+      
+      if (streamToggle.checked) {
+        // For streaming, the bubble is created and updated in sendToJetsonStream
+        await sendToJetson(text.trim());
+      } else {
+        // For non-streaming, use the old approach
+        const reply = await sendToJetson(text.trim());
+        appendBubble('assistant', reply);
+        speak(reply);
+        
+        // Add both user and assistant messages to history when complete
+        history.push({ role:"user", content:text.trim() });
+        history.push({ role:"assistant", content:reply });
+        localStorage.setItem('history', JSON.stringify(history));
+      }
     } else {
       appendBubble('system', 'Silence or unrecognized speech.');
     }
   } catch (e) {
     appendBubble('system', 'STT error: ' + e.message);
   } finally {
-    // Clear interrupted text
-    interruptedTtsText = null;
     // Return to listening
     setVADState('Listening', true);
     hintEl.textContent = 'Listening…';
@@ -543,13 +860,10 @@ function pollVAD() {
     if (db > VAD_CFG.startDb) {
       speechFrames++;
       if (speechFrames >= VAD_CFG.startFrames) {
-        // Store interrupted TTS text before stopping (if TTS was active)
-        if (speaking && interruptedTtsText) {
-          // Keep the interrupted text so we can restart if VAD sample is short
-        }
         // Stop TTS immediately when speech is detected
         if (speaking) {
-          speechSynthesis.cancel(); // Don't use stopSpeaking() as it clears interruptedTtsText
+          stopSpeaking();
+          stopProgressiveTTS();
         }
         startRecordingNow();
         speechFrames = 0;
@@ -574,25 +888,44 @@ function pollVAD() {
   }
 }
 
+/* ------------------------- Settings Menu ------------------------- */
+settingsToggle.onclick = (e) => {
+  e.stopPropagation();
+  settingsDropdown.classList.toggle('show');
+};
+
+// Close settings menu when clicking outside
+document.addEventListener('click', (e) => {
+  if (!settingsDropdown.contains(e.target) && e.target !== settingsToggle) {
+    settingsDropdown.classList.remove('show');
+  }
+});
+
+/* ------------------------- Keyboard Toggle ------------------------- */
+toggleKeyboardBtn.onclick = () => {
+  textInputGroup.classList.toggle('show');
+  if (textInputGroup.classList.contains('show')) {
+    txtEl.focus();
+  }
+};
+
 /* ------------------------- Controls ------------------------- */
-toggleVADBtn.onclick = async () => {
+vadStatePill.onclick = async () => {
   if (!listening) {
-    toggleVADBtn.disabled = true;
+    vadStatePill.disabled = true;
     try {
       await initVAD(); // prompts for mic permission (user gesture)
-      toggleVADBtn.textContent = '🛑 Stop VAD';
       setVADState('Listening', true);
     } catch (e) {
       appendBubble('system', 'Mic error: ' + e.message);
       setVADState('Idle', false);
     } finally {
-      toggleVADBtn.disabled = false;
+      vadStatePill.disabled = false;
     }
   } else {
     // stop listening
     listening = false;
     setVADState('Idle', false);
-    toggleVADBtn.textContent = '🎤 Start VAD';
     hintEl.textContent = 'Status: not listening.';
     try { clearInterval(meterTimer); } catch {}
     try { if (recorder && recorder.state === 'recording') recorder.stop(); } catch {}
