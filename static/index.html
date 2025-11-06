@@ -238,6 +238,24 @@ let history = storage.history.length ? storage.history : [
 ];
 renderAll();
 
+/* ------------------------- Reset/Clear Chat ------------------------- */
+function checkForResetPhrase(text) {
+  if (!text) return false;
+  const textLower = text.toLowerCase().trim();
+  const resetPhrases = ["let's start over", "lets start over", "start over", "reset chat", "clear chat"];
+  return resetPhrases.some(phrase => textLower.includes(phrase));
+}
+
+function clearChatHistory() {
+  // Reset history to just the system prompt
+  history = [
+    { role: "system", content: storage.systemPrompt }
+  ];
+  storage.history = history;
+  // Clear all visible chat bubbles
+  chatEl.innerHTML = "";
+}
+
 /* ------------------------- Model loading ------------------------- */
 async function loadModels() {
   try {
@@ -255,7 +273,7 @@ async function loadModels() {
     });
     
     // Always select gemma3n:e4b initially if available
-    const preferredModel = 'gemma3n:e4b';
+    const preferredModel = 'gemma3n:e2b';
     if (data.models.includes(preferredModel)) {
       modelSelect.value = preferredModel;
       storage.model = preferredModel;
@@ -534,6 +552,11 @@ async function sendToJetsonRegular(server, payload) {
   if(!res.ok) throw new Error(await res.text());
   const data = await res.json();
   const reply = data.reply || "";
+  
+  // If this was a reset, history should already be cleared by the frontend
+  // Just ensure we don't add anything to history
+  // (The reset flag is just for confirmation)
+  
   return reply;
 }
 
@@ -543,6 +566,9 @@ async function sendToJetsonStream(userText, server, payload) {
   return new Promise((resolve, reject) => {
     // Reset TTS state for new response
     stopProgressiveTTS();
+    
+    // Check if this is a reset (history should already be cleared by caller)
+    const isReset = checkForResetPhrase(userText);
     
     // Since EventSource doesn't support POST, we'll use fetch with streaming
     fetch(url, {
@@ -558,14 +584,18 @@ async function sendToJetsonStream(userText, server, payload) {
       const decoder = new TextDecoder();
       let fullReply = "";
       let currentBubble = null;
+      let wasReset = false;
       
       function readStream() {
         reader.read().then(({ done, value }) => {
           if (done) {
-            // Add both user and assistant messages to history when complete
-            history.push({ role:"user", content:userText });
-            history.push({ role:"assistant", content:fullReply });
-            localStorage.setItem('history', JSON.stringify(history));
+            // If it was a reset, don't add to history (already cleared)
+            if (!wasReset) {
+              // Add both user and assistant messages to history when complete
+              history.push({ role:"user", content:userText });
+              history.push({ role:"assistant", content:fullReply });
+              localStorage.setItem('history', JSON.stringify(history));
+            }
             resolve(fullReply);
             return;
           }
@@ -593,6 +623,11 @@ async function sendToJetsonStream(userText, server, payload) {
                   speakProgressive(content);
                   
                 } else if (data.type === 'done') {
+                  // Check if this was a reset
+                  if (data.reset) {
+                    wasReset = true;
+                  }
+                  
                   // Streaming complete - finalize any remaining text
                   finalizeProgressiveTTS();
                   
@@ -657,6 +692,28 @@ sendBtn.onclick = async () => {
   stopProgressiveTTS();
   
   txtEl.value = "";
+  
+  // Check for reset phrase
+  if (checkForResetPhrase(text)) {
+    // Clear history and all visible chat bubbles
+    clearChatHistory();
+    // Show user's reset message
+    appendBubble('user', text);
+    // Still send to backend to trigger logging reset
+    try {
+      if (streamToggle.checked) {
+        await sendToJetson(text);
+      } else {
+        const reply = await sendToJetson(text);
+        // History already cleared, don't add to history
+        // The backend response will be shown as a system message
+      }
+    } catch(err){
+      appendBubble('system', 'Error: ' + err.message);
+    }
+    return;
+  }
+  
   appendBubble('user', text);
   
   try {
@@ -835,21 +892,43 @@ async function onRecordingStop() {
     if (!res.ok) throw new Error(await res.text());
     const { text } = await res.json();
     if (text && text.trim().length) {
-      appendBubble('user', text.trim());
+      const userText = text.trim();
       
-      if (streamToggle.checked) {
-        // For streaming, the bubble is created and updated in sendToJetsonStream
-        await sendToJetson(text.trim());
+      // Check for reset phrase
+      if (checkForResetPhrase(userText)) {
+        // Clear history and all visible chat bubbles
+        clearChatHistory();
+        // Show user's reset message
+        appendBubble('user', userText);
+        // Still send to backend to trigger logging reset
+        try {
+          if (streamToggle.checked) {
+            await sendToJetson(userText);
+          } else {
+            const reply = await sendToJetson(userText);
+            // History already cleared, don't add to history
+            // The backend response will be shown as a system message
+          }
+        } catch(err){
+          appendBubble('system', 'Error: ' + err.message);
+        }
       } else {
-        // For non-streaming, use the old approach
-        const reply = await sendToJetson(text.trim());
-        appendBubble('assistant', reply);
-        speak(reply);
+        appendBubble('user', userText);
         
-        // Add both user and assistant messages to history when complete
-        history.push({ role:"user", content:text.trim() });
-        history.push({ role:"assistant", content:reply });
-        localStorage.setItem('history', JSON.stringify(history));
+        if (streamToggle.checked) {
+          // For streaming, the bubble is created and updated in sendToJetsonStream
+          await sendToJetson(userText);
+        } else {
+          // For non-streaming, use the old approach
+          const reply = await sendToJetson(userText);
+          appendBubble('assistant', reply);
+          speak(reply);
+          
+          // Add both user and assistant messages to history when complete
+          history.push({ role:"user", content:userText });
+          history.push({ role:"assistant", content:reply });
+          localStorage.setItem('history', JSON.stringify(history));
+        }
       }
     } else {
       appendBubble('system', 'Silence or unrecognized speech.');

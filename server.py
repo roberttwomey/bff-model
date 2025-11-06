@@ -32,7 +32,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
 # ---------- Chat Logging ----------
-LOG_DIR = Path.home() / "bff" / "data"
+LOG_DIR = Path.home() / "bff" / "logs"
 SESSION_START_TIME = datetime.now()
 SESSION_ID = SESSION_START_TIME.strftime("%Y%m%d_%H%M%S")
 LOG_FILE = LOG_DIR / f"chat_session_{SESSION_ID}.jsonl"
@@ -59,6 +59,43 @@ def log_chat(message_data: dict):
     with LOG_LOCK:
         with open(LOG_FILE, "a") as f:
             f.write(json.dumps(log_entry) + "\n")
+
+def restart_logging():
+    """Restart logging by creating a new session"""
+    global SESSION_START_TIME, SESSION_ID, LOG_FILE
+    with LOG_LOCK:
+        # Log session end for old session
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "type": "session_end"
+        }
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        
+        # Create new session
+        SESSION_START_TIME = datetime.now()
+        SESSION_ID = SESSION_START_TIME.strftime("%Y%m%d_%H%M%S")
+        LOG_FILE = LOG_DIR / f"chat_session_{SESSION_ID}.jsonl"
+        
+        # Write new session start info
+        with open(LOG_FILE, "w") as f:
+            session_info = {
+                "session_id": SESSION_ID,
+                "start_time": SESSION_START_TIME.isoformat(),
+                "type": "session_start"
+            }
+            f.write(json.dumps(session_info) + "\n")
+        
+        print(f"[LOG] Logging restarted: {LOG_FILE}")
+
+def check_for_reset_phrase(text: str) -> bool:
+    """Check if user wants to start over"""
+    if not text:
+        return False
+    text_lower = text.lower().strip()
+    # Check for variations: "let's start over", "lets start over", "start over", etc.
+    reset_phrases = ["let's start over", "lets start over", "start over", "reset chat", "clear chat"]
+    return any(phrase in text_lower for phrase in reset_phrases)
 
 print(f"[LOG] Chat logging enabled: {LOG_FILE}")
 
@@ -97,6 +134,18 @@ async def get_models():
 @app.post("/chat")
 async def chat(payload: ChatIn):
     model = payload.model or DEFAULT_MODEL
+    
+    # Check if the last user message contains "let's start over"
+    user_messages = [m for m in payload.messages if m.role == "user"]
+    if user_messages and check_for_reset_phrase(user_messages[-1].content):
+        # Restart logging
+        restart_logging()
+        log_chat({
+            "type": "reset_triggered",
+            "trigger_message": user_messages[-1].content
+        })
+        return JSONResponse({"reply": "Yes, let's start over.", "reset": True})
+    
     body = {"model": model, "messages": [m.dict() for m in payload.messages], "stream": False}
     
     # Log incoming messages
@@ -125,6 +174,33 @@ async def chat(payload: ChatIn):
 async def chat_stream(payload: ChatIn):
     """Stream chat responses from Ollama as Server-Sent Events"""
     model = payload.model or DEFAULT_MODEL
+    
+    # Check if the last user message contains "let's start over"
+    user_messages = [m for m in payload.messages if m.role == "user"]
+    if user_messages and check_for_reset_phrase(user_messages[-1].content):
+        # Restart logging
+        restart_logging()
+        log_chat({
+            "type": "reset_triggered",
+            "trigger_message": user_messages[-1].content
+        })
+        
+        # Return reset message as stream
+        async def generate_reset():
+            yield f"data: {json.dumps({'type': 'content', 'content': 'Yes, lets start over.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'reset': True})}\n\n"
+        
+        return StreamingResponse(
+            generate_reset(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
+    
     body = {"model": model, "messages": [m.dict() for m in payload.messages], "stream": True}
     
     # Log incoming messages
