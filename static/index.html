@@ -126,7 +126,7 @@ const storage = {
   set model(v){ localStorage.setItem('model', v); },
   get stream(){ return localStorage.getItem('stream') !== 'false'; },
   set stream(v){ localStorage.setItem('stream', String(v)); },
-  get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'You are SNAPPER, a robot dog and companion.'; },
+  get systemPrompt(){ return localStorage.getItem('systemPrompt') || 'you are a robot dog, SNAPPER, interested in conversation with the user. you do not say woof, whir, tail wag, etc. just conversation and words. keep your answers to 2 sentences or less.'; },
   set systemPrompt(v){ localStorage.setItem('systemPrompt', v); },
   get history(){ try{ return JSON.parse(localStorage.getItem('history')||'[]'); } catch{ return []; } },
   set history(v){ localStorage.setItem('history', JSON.stringify(v)); },
@@ -705,7 +705,7 @@ function stopRecordingNow() {
   recordingActive = false;
   try { recorder.stop(); } catch {}
   setVADState('Processing…', true);
-  hintEl.textContent = 'Transcribing…';
+  hintEl.textContent = 'Responding…';
 }
 
 async function onRecordingStop() {
@@ -720,9 +720,21 @@ async function onRecordingStop() {
     const { text } = await res.json();
     if (text && text.trim().length) {
       appendBubble('user', text.trim());
-      const reply = await sendToJetson(text.trim());
-      appendBubble('assistant', reply);
-      speak(reply);
+      
+      if (streamToggle.checked) {
+        // For streaming, the bubble is created and updated in sendToJetsonStream
+        await sendToJetson(text.trim());
+      } else {
+        // For non-streaming, use the old approach
+        const reply = await sendToJetson(text.trim());
+        appendBubble('assistant', reply);
+        speak(reply);
+        
+        // Add both user and assistant messages to history when complete
+        history.push({ role:"user", content:text.trim() });
+        history.push({ role:"assistant", content:reply });
+        localStorage.setItem('history', JSON.stringify(history));
+      }
     } else {
       appendBubble('system', 'Silence or unrecognized speech.');
     }
