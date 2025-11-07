@@ -4,7 +4,8 @@
 This script performs continuous voice activity detection (VAD) on microphone
 audio, automatically segments speech, transcribes each utterance with Whisper,
 sends the resulting text to an Ollama model (`gemma3n:e2b` by default), and
-plays back the assistant response via Piper text-to-speech.
+plays back the assistant response via Piper text-to-speech using the Python
+`piper-tts` library.
 
 Requirements:
     - ollama (Python package) with the `gemma3n:e2b` model pulled locally
@@ -12,7 +13,7 @@ Requirements:
     - sounddevice
     - soundfile
     - numpy
-    - Piper TTS CLI and at least one voice model file
+    - piper-tts (Python package) and at least one Piper voice model file
 
 Example usage:
     python noweb/bff-voice-chat.py --piper-voice piper/en_GB-alan-medium.onnx
@@ -26,21 +27,29 @@ Environment variables:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import queue
-import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Iterable, List
+import wave
 
 import numpy as np
 import ollama
 import sounddevice as sd
 import soundfile as sf
 import whisper
+
+from piper import PiperVoice
+try:  # Optional type that some versions expose
+    from piper import AudioChunk  # type: ignore
+except ImportError:  # pragma: no cover - older library versions
+    AudioChunk = None
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -50,6 +59,10 @@ DEFAULT_SYSTEM_PROMPT = (
 DEFAULT_OLLAMA_MODEL = os.environ.get("BFF_OLLAMA_MODEL", "gemma3n:e4b")
 DEFAULT_WHISPER_MODEL = os.environ.get("BFF_WHISPER_MODEL", "base")
 DEFAULT_SAMPLE_RATE = 16_000
+DEFAULT_INPUT_DEVICE_KEYWORD = os.environ.get(
+    "BFF_INPUT_DEVICE_KEYWORD", "OpenRun Pro 2 by Shokz"
+)
+LOG_ROOT = Path.home() / "bff" / "logs"
 
 
 @dataclass
@@ -59,16 +72,21 @@ class ConversationConfig:
     ollama_model: str = DEFAULT_OLLAMA_MODEL
     whisper_model: str = DEFAULT_WHISPER_MODEL
     piper_voice: Path | None = None
+    piper_config: Path | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     sample_rate: int = DEFAULT_SAMPLE_RATE
     max_record_seconds: int = 20
-    piper_speed: float = 1.0
+    piper_length_scale: float | None = None
+    piper_noise_scale: float | None = None
+    piper_noise_w: float | None = None
     activation_threshold: float = 0.03
     silence_threshold: float = 0.015
     silence_duration: float = 0.8
     min_phrase_seconds: float = 0.5
     block_duration: float = 0.2
     show_levels: bool = False
+    input_device_keyword: str | None = DEFAULT_INPUT_DEVICE_KEYWORD
+    input_device_index: int | None = None
 
 
 def parse_args() -> ConversationConfig:
@@ -90,6 +108,11 @@ def parse_args() -> ConversationConfig:
         help="Path to Piper voice model (*.onnx) (default: env BFF_PIPER_VOICE)",
     )
     parser.add_argument(
+        "--piper-config",
+        type=Path,
+        help="Optional path to Piper voice config (*.json); defaults to <voice>.json",
+    )
+    parser.add_argument(
         "--system-prompt",
         default=DEFAULT_SYSTEM_PROMPT,
         help="System prompt sent with each conversation",
@@ -101,10 +124,19 @@ def parse_args() -> ConversationConfig:
         help="Maximum seconds to record per turn (default: %(default)s)",
     )
     parser.add_argument(
-        "--piper-speed",
+        "--piper-length-scale",
         type=float,
-        default=1.0,
-        help="Length scale multiplier for Piper speech rate (lower=faster, default: %(default)s)",
+        help="Override Piper config length_scale (lower=faster)",
+    )
+    parser.add_argument(
+        "--piper-noise-scale",
+        type=float,
+        help="Override Piper config noise_scale",
+    )
+    parser.add_argument(
+        "--piper-noise-w",
+        type=float,
+        help="Override Piper config noise_w",
     )
     parser.add_argument(
         "--activation-threshold",
@@ -142,6 +174,11 @@ def parse_args() -> ConversationConfig:
         help="Print live RMS level meter to stderr",
     )
     parser.add_argument(
+        "--input-device-keyword",
+        default=DEFAULT_INPUT_DEVICE_KEYWORD,
+        help="Substring to match desired input device (default: %(default)s)",
+    )
+    parser.add_argument(
         "--sample-rate",
         type=int,
         default=DEFAULT_SAMPLE_RATE,
@@ -151,27 +188,128 @@ def parse_args() -> ConversationConfig:
 
     if args.piper_voice is None:
         parser.error("Piper voice model must be provided via --piper-voice or BFF_PIPER_VOICE")
+    if not args.piper_voice.exists():
+        parser.error(f"Piper voice model not found: {args.piper_voice}")
+
+    input_keyword = args.input_device_keyword.strip() if args.input_device_keyword else None
+    if input_keyword == "":
+        input_keyword = None
 
     return ConversationConfig(
         ollama_model=args.ollama_model,
         whisper_model=args.whisper_model,
         piper_voice=args.piper_voice,
+        piper_config=args.piper_config,
         system_prompt=args.system_prompt,
         sample_rate=args.sample_rate,
         max_record_seconds=args.max_record_seconds,
-        piper_speed=args.piper_speed,
+        piper_length_scale=args.piper_length_scale,
+        piper_noise_scale=args.piper_noise_scale,
+        piper_noise_w=args.piper_noise_w,
         activation_threshold=args.activation_threshold,
         silence_threshold=args.silence_threshold,
         silence_duration=args.silence_duration,
         min_phrase_seconds=args.min_phrase_seconds,
         block_duration=args.block_duration,
         show_levels=args.show_levels,
+        input_device_keyword=input_keyword,
     )
 
 
 def load_whisper_model(name: str) -> whisper.Whisper:
     print(f"Loading Whisper model '{name}'…", file=sys.stderr)
     return whisper.load_model(name)
+
+
+def resolve_piper_config_path(model_path: Path, config_path: Path | None) -> Path:
+    if config_path is not None:
+        if not config_path.exists():
+            raise FileNotFoundError(f"Piper config not found: {config_path}")
+        return config_path
+
+    candidate = model_path.with_suffix(model_path.suffix + ".json")
+    if candidate.exists():
+        return candidate
+
+    alt = model_path.with_suffix(".json")
+    if alt.exists():
+        return alt
+
+    raise FileNotFoundError(
+        "Could not infer Piper config JSON. Provide --piper-config explicitly."
+    )
+
+
+def load_piper_voice(
+    model_path: Path,
+    config_path: Path | None,
+    *,
+    length_scale: float | None = None,
+    noise_scale: float | None = None,
+    noise_w: float | None = None,
+) -> PiperVoice:
+    resolved = resolve_piper_config_path(model_path, config_path)
+    with open(resolved, "r", encoding="utf-8") as f:
+        config_data = json.load(f)
+
+    overrides = {
+        "length_scale": length_scale,
+        "noise_scale": noise_scale,
+        "noise_w": noise_w,
+    }
+
+    applied = {k: v for k, v in overrides.items() if v is not None}
+    tmp_path: Path | None = None
+
+    if applied:
+        config_data.update(applied)
+        tmp_file = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        tmp_path = Path(tmp_file.name)
+        json.dump(config_data, tmp_file)
+        tmp_file.flush()
+        tmp_file.close()
+        config_to_use = tmp_path
+        print(
+            "Loading Piper voice '{}' with overrides {}".format(
+                model_path.name,
+                ", ".join(f"{k}={v}" for k, v in applied.items()),
+            ),
+            file=sys.stderr,
+        )
+    else:
+        config_to_use = resolved
+        print(
+            f"Loading Piper voice '{model_path.name}' with config '{resolved.name}'…",
+            file=sys.stderr,
+        )
+
+    try:
+        voice = PiperVoice.load(str(model_path), config_path=str(config_to_use))
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+    return voice
+
+
+def ensure_log_dir() -> Path:
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    return LOG_ROOT
+
+
+def append_log_line(log_path: Path, payload: dict[str, Any]) -> None:
+    record = {"timestamp": datetime.now().isoformat(), **payload}
+    with log_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def find_input_device(keyword: str, min_channels: int = 1) -> int | None:
+    keyword_lower = keyword.lower()
+    for idx, device in enumerate(sd.query_devices()):
+        name = device.get("name", "")
+        if keyword_lower in name.lower() and device.get("max_input_channels", 0) >= min_channels:
+            return idx
+    return None
 
 
 def rms_amplitude(block: np.ndarray) -> float:
@@ -201,6 +339,7 @@ def phrase_stream(config: ConversationConfig) -> Iterable[np.ndarray]:
         dtype="float32",
         blocksize=block_size,
         callback=audio_callback,
+        device=config.input_device_index,
     ):
         recording = False
         silence_blocks = 0
@@ -280,21 +419,99 @@ def query_ollama(model_name: str, messages: list[dict[str, str]]) -> str:
 
 
 def synthesize_with_piper(
-    voice_path: Path, text: str, output_wav: Path, length_scale: float
+    voice: PiperVoice, text: str, output_wav: Path
 ) -> None:
     print("Synthesizing speech with Piper…", file=sys.stderr)
-    cmd = [
-        "piper",
-        "--model",
-        str(voice_path),
-        "--output_file",
-        str(output_wav),
-    ]
-    if length_scale != 1.0:
-        cmd.extend(["--length_scale", f"{length_scale:.3f}"])
-    completed = subprocess.run(cmd, input=text, text=True, check=True)
-    if completed.returncode != 0:
-        raise RuntimeError("Piper synthesis failed")
+    audio_iter = voice.synthesize(text)
+    base_sample_rate = int(
+        getattr(voice, "sample_rate", getattr(getattr(voice, "config", {}), "sample_rate", DEFAULT_SAMPLE_RATE))
+    )
+
+    def extract_audio_field(obj: Any) -> Any | None:
+        field_candidates = (
+            "audio",
+            "_audio",
+            "buffer",
+            "data",
+            "pcm",
+            "samples",
+            "wave",
+            "waveform",
+            "frames",
+            "chunk",
+            "audio_int16_bytes",
+            "audio_int16_array",
+            "audio_float_array",
+            "_audio_int16_bytes",
+            "_audio_int16_array",
+        )
+        for attr in field_candidates:
+            value = getattr(obj, attr, None)
+            if value is not None:
+                return value
+        return None
+
+    def to_bytes_and_rate(chunk: Any) -> tuple[bytes, int | None]:
+        current_rate: int | None = None
+        data: Any = chunk
+
+        if AudioChunk is not None and isinstance(chunk, AudioChunk):
+            maybe = extract_audio_field(chunk)
+            if maybe is not None:
+                data = maybe
+            current_rate = getattr(chunk, "sample_rate", None)
+        elif isinstance(chunk, dict):
+            if "audio" in chunk:
+                data = chunk["audio"]
+            else:
+                for key in ("buffer", "data", "pcm", "samples"):
+                    if key in chunk:
+                        data = chunk[key]
+                        break
+            current_rate = chunk.get("sample_rate")
+        else:
+            maybe = extract_audio_field(chunk)
+            if maybe is not None:
+                data = maybe
+                current_rate = getattr(chunk, "sample_rate", None)
+
+        if isinstance(data, np.ndarray):
+            return data.astype(np.int16).tobytes(), current_rate
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            return bytes(data), current_rate
+        if isinstance(data, (tuple, list)) and data:
+            first = data[0]
+            if isinstance(first, np.ndarray):
+                return first.astype(np.int16).tobytes(), current_rate
+            if isinstance(first, (bytes, bytearray, memoryview)):
+                return bytes(first), current_rate
+        if data is chunk and hasattr(chunk, "__iter__") and not isinstance(
+            chunk, (str, bytes, bytearray, memoryview)
+        ):
+            try:
+                arr = np.fromiter(chunk, dtype=np.int16)
+                return arr.tobytes(), current_rate
+            except TypeError:
+                pass
+
+        # Fall back to generic bytes conversion if possible
+        try:
+            return bytes(data), current_rate
+        except Exception as exc:
+            raise TypeError(
+                f"Unsupported Piper chunk type: {type(chunk)!r} (available attrs: {dir(chunk)})"
+            ) from exc
+
+    with wave.open(str(output_wav), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)  # 16-bit PCM
+        wav_file.setframerate(base_sample_rate)
+
+        for chunk in audio_iter:
+            data, maybe_rate = to_bytes_and_rate(chunk)
+            if maybe_rate and maybe_rate != base_sample_rate:
+                wav_file.setframerate(maybe_rate)
+            wav_file.writeframes(data)
 
 
 def play_audio(audio_path: Path) -> None:
@@ -310,6 +527,51 @@ def build_initial_messages(system_prompt: str) -> list[dict[str, str]]:
 def run_conversation(config: ConversationConfig) -> None:
     whisper_model = load_whisper_model(config.whisper_model)
     messages = build_initial_messages(config.system_prompt)
+    assert config.piper_voice is not None
+    piper_voice = load_piper_voice(
+        config.piper_voice,
+        config.piper_config,
+        length_scale=config.piper_length_scale,
+        noise_scale=config.piper_noise_scale,
+        noise_w=config.piper_noise_w,
+    )
+
+    log_dir = ensure_log_dir()
+    session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_file = log_dir / f"voice-session-{session_id}.jsonl"
+    append_log_line(
+        log_file,
+        {
+            "type": "session_start",
+            "session_id": session_id,
+            "config": {
+                "ollama_model": config.ollama_model,
+                "whisper_model": config.whisper_model,
+                "piper_voice": str(config.piper_voice),
+                "piper_config": str(config.piper_config) if config.piper_config else None,
+                "length_scale": config.piper_length_scale,
+                "noise_scale": config.piper_noise_scale,
+                "noise_w": config.piper_noise_w,
+                "sample_rate": config.sample_rate,
+            },
+        },
+    )
+
+    if config.input_device_keyword:
+        device_index = find_input_device(config.input_device_keyword)
+        if device_index is not None:
+            config.input_device_index = device_index
+            dev_info = sd.query_devices(device_index)
+            print(
+                f"Using input device #{device_index}: {dev_info['name']}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Warning: no input device found matching '{config.input_device_keyword}'."
+                " Falling back to system default.",
+                file=sys.stderr,
+            )
 
     with tempfile.TemporaryDirectory(prefix="bff-voice-chat-") as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -325,6 +587,16 @@ def run_conversation(config: ConversationConfig) -> None:
                     continue
 
                 messages.append({"role": "user", "content": user_text})
+                append_log_line(
+                    log_file,
+                    {
+                        "type": "user",
+                        "session_id": session_id,
+                        "turn": turn,
+                        "text": user_text,
+                        "audio_path": str(raw_audio),
+                    },
+                )
                 assistant_text = query_ollama(config.ollama_model, messages)
                 if not assistant_text:
                     print("Assistant returned empty response; stopping.")
@@ -334,16 +606,30 @@ def run_conversation(config: ConversationConfig) -> None:
 
                 response_audio = tmpdir_path / f"turn-{turn:03d}-response.wav"
                 synthesize_with_piper(
-                    config.piper_voice,
+                    piper_voice,
                     assistant_text,
                     response_audio,
-                    length_scale=config.piper_speed,
                 )
                 play_audio(response_audio)
+                append_log_line(
+                    log_file,
+                    {
+                        "type": "assistant",
+                        "session_id": session_id,
+                        "turn": turn,
+                        "text": assistant_text,
+                        "audio_path": str(response_audio),
+                    },
+                )
 
                 turn += 1
         except KeyboardInterrupt:
             print("\nExiting conversation.")
+        finally:
+            append_log_line(
+                log_file,
+                {"type": "session_end", "session_id": session_id},
+            )
 
 
 def main() -> None:
