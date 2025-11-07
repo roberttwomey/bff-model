@@ -428,6 +428,43 @@ def query_ollama(
     print(f"Querying Ollama model '{model_name}'…", file=sys.stderr)
     client = ollama.Client()
 
+    def extract_content(chunk: Any) -> str:
+        if isinstance(chunk, dict):
+            message = chunk.get("message") or {}
+            content = message.get("content")
+            if content:
+                return content
+            response = chunk.get("response")
+            if response:
+                return response
+            delta = chunk.get("delta")
+            if delta and isinstance(delta, dict):
+                text = delta.get("content")
+                if text:
+                    return text
+            return ""
+
+        message_obj = getattr(chunk, "message", None)
+        if message_obj is not None:
+            content = getattr(message_obj, "content", None)
+            if content:
+                return content
+            if isinstance(message_obj, dict):
+                content = message_obj.get("content")
+                if content:
+                    return content
+
+        for attr in ("response", "content", "delta"):
+            value = getattr(chunk, attr, None)
+            if isinstance(value, str) and value:
+                return value
+            if isinstance(value, dict):
+                text = value.get("content") if hasattr(value, "get") else None
+                if text:
+                    return text
+
+        return ""
+
     try:
         stream = client.chat(model=model_name, messages=messages, stream=True)
     except TypeError:
@@ -458,15 +495,23 @@ def query_ollama(
                 print("Ollama response cancelled due to new input.", file=sys.stderr)
                 return None
 
-            content = chunk.get("message", {}).get("content") if isinstance(chunk, dict) else None
-            if not content and isinstance(chunk, dict):
-                content = chunk.get("response")
+            content = extract_content(chunk)
             if content:
                 chunks.append(content)
 
         text = "".join(chunks).strip()
+        if text:
+            print(f"Assistant: {text}")
+            return text
+
+        if abort_event.is_set():
+            return None
+
+        # Streaming yielded no text; fallback to blocking call
+        response = client.chat(model=model_name, messages=messages)
+        text = response.get("message", {}).get("content", "").strip()
         print(f"Assistant: {text}")
-        return text
+        return text if text else None
     finally:
         stream = None
 
