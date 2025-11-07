@@ -304,6 +304,12 @@ def append_log_line(log_path: Path, payload: dict[str, Any]) -> None:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def meter_break(show_levels: bool) -> None:
+    if show_levels:
+        sys.stderr.write("\n") #\n
+        sys.stderr.flush()
+
+
 def find_input_device(keyword: str, min_channels: int = 1) -> int | None:
     keyword_lower = keyword.lower()
     for idx, device in enumerate(sd.query_devices()):
@@ -364,8 +370,11 @@ def phrase_stream(
                 normalized = min(1.0, amp / max(config.activation_threshold, 1e-6))
                 filled = int(normalized * meter_width)
                 bar = "#" * filled + "-" * (meter_width - filled)
+                suffix = "REC"
+                if recording and amp >= config.activation_threshold:
+                    suffix = "REC (*)"
                 sys.stderr.write(
-                    f"\rLevel {amp:0.3f} |{bar}| {'REC' if recording else '...'}"
+                    f"\rLevel {amp:0.3f} |{bar}| {suffix}"
                 )
                 sys.stderr.flush()
 
@@ -375,10 +384,6 @@ def phrase_stream(
                     collected = [block]
                     silence_blocks = 0
                     block_counter = 1
-                    print("Speech detected.")
-                    if config.show_levels:
-                        sys.stderr.write("\n")
-                        sys.stderr.flush()
             else:
                 collected.append(block)
                 if amp < config.silence_threshold:
@@ -395,24 +400,22 @@ def phrase_stream(
                     if len(collected) < min_blocks:
                         print("Discarded short segment.", file=sys.stderr)
                         collected = []
-                        if config.show_levels:
-                            sys.stderr.write("\n")
-                            sys.stderr.flush()
+                        meter_break(config.show_levels)
                         continue
 
                     audio = np.concatenate(collected, axis=0)
                     collected = []
-                    if config.show_levels:
-                        sys.stderr.write("\n")
-                        sys.stderr.flush()
+                    meter_break(config.show_levels)
                     yield audio
 
 
 
-def transcribe_audio(model: whisper.Whisper, audio_path: Path) -> str:
+def transcribe_audio(model: whisper.Whisper, audio_path: Path, show_levels: bool) -> str:
+    meter_break(show_levels)
     print("Transcribing with Whisper…", file=sys.stderr)
     result = model.transcribe(str(audio_path), fp16=False)
     text = result.get("text", "").strip()
+    meter_break(show_levels)
     print(f"You said: {text}")
     return text
 
@@ -424,7 +427,10 @@ def query_ollama(
     segment_queue: queue.Queue[np.ndarray],
     pending_segments: list[np.ndarray],
     abort_event: threading.Event,
+    playback_interrupt: threading.Event,
+    show_levels: bool,
 ) -> str | None:
+    meter_break(show_levels)
     print(f"Querying Ollama model '{model_name}'…", file=sys.stderr)
     client = ollama.Client()
 
@@ -471,6 +477,7 @@ def query_ollama(
         # Fallback: streaming not supported; blocking call (no interruption)
         response = client.chat(model=model_name, messages=messages)
         text = response.get("message", {}).get("content", "").strip()
+        meter_break(show_levels)
         print(f"Assistant: {text}")
         return text
 
@@ -486,6 +493,7 @@ def query_ollama(
                 else:
                     pending_segments.append(new_segment)
                     abort_event.set()
+                    playback_interrupt.set()
 
             if abort_event.is_set():
                 try:
@@ -501,6 +509,7 @@ def query_ollama(
 
         text = "".join(chunks).strip()
         if text:
+            meter_break(show_levels)
             print(f"Assistant: {text}")
             return text
 
@@ -510,6 +519,7 @@ def query_ollama(
         # Streaming yielded no text; fallback to blocking call
         response = client.chat(model=model_name, messages=messages)
         text = response.get("message", {}).get("content", "").strip()
+        meter_break(show_levels)
         print(f"Assistant: {text}")
         return text if text else None
     finally:
@@ -612,10 +622,34 @@ def synthesize_with_piper(
             wav_file.writeframes(data)
 
 
-def play_audio(audio_path: Path) -> None:
+def play_audio(audio_path: Path, interrupt_event: threading.Event) -> bool:
     data, samplerate = sf.read(audio_path, dtype="float32")
-    sd.play(data, samplerate)
-    sd.wait()
+    if data.ndim == 1:
+        data = data[:, np.newaxis]
+    frames_total = data.shape[0]
+    channels = data.shape[1]
+    block = max(1024, samplerate // 10)
+
+    interrupt_event.clear()
+
+    with sd.OutputStream(
+        samplerate=samplerate,
+        channels=channels,
+        dtype="float32",
+    ) as stream:
+        cursor = 0
+        while cursor < frames_total:
+            if interrupt_event.is_set():
+                stream.abort()
+                stream.stop()
+                return False
+
+            end = min(cursor + block, frames_total)
+            chunk = data[cursor:end]
+            stream.write(chunk)
+            cursor = end
+
+    return True
 
 
 def build_initial_messages(system_prompt: str) -> list[dict[str, str]]:
@@ -674,11 +708,13 @@ def run_conversation(config: ConversationConfig) -> None:
     stop_event = threading.Event()
     segment_queue: queue.Queue[np.ndarray] = queue.Queue()
     pending_segments: list[np.ndarray] = []
+    playback_interrupt = threading.Event()
 
     def producer() -> None:
         try:
             for segment in phrase_stream(config, stop_event=stop_event):
                 segment_queue.put(segment)
+                playback_interrupt.set()
         except Exception as exc:
             print(f"Phrase producer error: {exc}", file=sys.stderr)
 
@@ -701,7 +737,7 @@ def run_conversation(config: ConversationConfig) -> None:
                 raw_audio = tmpdir_path / f"turn-{turn:03d}-input.wav"
                 sf.write(raw_audio, phrase, config.sample_rate)
 
-                user_text = transcribe_audio(whisper_model, raw_audio)
+                user_text = transcribe_audio(whisper_model, raw_audio, config.show_levels)
                 if not user_text:
                     print("Did not catch that. Let's try again.")
                     continue
@@ -725,6 +761,8 @@ def run_conversation(config: ConversationConfig) -> None:
                     segment_queue=segment_queue,
                     pending_segments=pending_segments,
                     abort_event=abort_event,
+                    playback_interrupt=playback_interrupt,
+                    show_levels=config.show_levels,
                 )
                 if not assistant_text:
                     append_log_line(
@@ -746,11 +784,11 @@ def run_conversation(config: ConversationConfig) -> None:
                     assistant_text,
                     response_audio,
                 )
-                play_audio(response_audio)
+                played = play_audio(response_audio, playback_interrupt)
                 append_log_line(
                     log_file,
                     {
-                        "type": "assistant",
+                        "type": "assistant" if played else "assistant_audio_cancelled",
                         "session_id": session_id,
                         "turn": turn,
                         "text": assistant_text,
