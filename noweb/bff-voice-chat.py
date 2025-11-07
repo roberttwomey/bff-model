@@ -32,6 +32,7 @@ import os
 import queue
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -316,7 +317,9 @@ def rms_amplitude(block: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.square(block))))
 
 
-def phrase_stream(config: ConversationConfig) -> Iterable[np.ndarray]:
+def phrase_stream(
+    config: ConversationConfig, stop_event: threading.Event | None = None
+) -> Iterable[np.ndarray]:
     """Yield successive speech segments detected from the microphone."""
 
     channels = 1
@@ -347,7 +350,12 @@ def phrase_stream(config: ConversationConfig) -> Iterable[np.ndarray]:
         block_counter = 0
 
         while True:
-            block = q.get()
+            if stop_event and stop_event.is_set():
+                break
+            try:
+                block = q.get(timeout=0.1)
+            except queue.Empty:
+                continue
             block_counter += 1 if recording else 0
             amp = rms_amplitude(block)
 
@@ -409,13 +417,58 @@ def transcribe_audio(model: whisper.Whisper, audio_path: Path) -> str:
     return text
 
 
-def query_ollama(model_name: str, messages: list[dict[str, str]]) -> str:
+def query_ollama(
+    model_name: str,
+    messages: list[dict[str, str]],
+    *,
+    segment_queue: queue.Queue[np.ndarray],
+    pending_segments: list[np.ndarray],
+    abort_event: threading.Event,
+) -> str | None:
     print(f"Querying Ollama model '{model_name}'…", file=sys.stderr)
     client = ollama.Client()
-    response = client.chat(model=model_name, messages=messages)
-    text = response.get("message", {}).get("content", "").strip()
-    print(f"Assistant: {text}")
-    return text
+
+    try:
+        stream = client.chat(model=model_name, messages=messages, stream=True)
+    except TypeError:
+        # Fallback: streaming not supported; blocking call (no interruption)
+        response = client.chat(model=model_name, messages=messages)
+        text = response.get("message", {}).get("content", "").strip()
+        print(f"Assistant: {text}")
+        return text
+
+    chunks: list[str] = []
+
+    try:
+        for chunk in stream:
+            while True:
+                try:
+                    new_segment = segment_queue.get_nowait()
+                except queue.Empty:
+                    break
+                else:
+                    pending_segments.append(new_segment)
+                    abort_event.set()
+
+            if abort_event.is_set():
+                try:
+                    client.cancel(model=model_name)
+                except Exception:
+                    pass
+                print("Ollama response cancelled due to new input.", file=sys.stderr)
+                return None
+
+            content = chunk.get("message", {}).get("content") if isinstance(chunk, dict) else None
+            if not content and isinstance(chunk, dict):
+                content = chunk.get("response")
+            if content:
+                chunks.append(content)
+
+        text = "".join(chunks).strip()
+        print(f"Assistant: {text}")
+        return text
+    finally:
+        stream = None
 
 
 def synthesize_with_piper(
@@ -573,11 +626,33 @@ def run_conversation(config: ConversationConfig) -> None:
                 file=sys.stderr,
             )
 
+    stop_event = threading.Event()
+    segment_queue: queue.Queue[np.ndarray] = queue.Queue()
+    pending_segments: list[np.ndarray] = []
+
+    def producer() -> None:
+        try:
+            for segment in phrase_stream(config, stop_event=stop_event):
+                segment_queue.put(segment)
+        except Exception as exc:
+            print(f"Phrase producer error: {exc}", file=sys.stderr)
+
+    producer_thread = threading.Thread(target=producer, daemon=True)
+    producer_thread.start()
+
     with tempfile.TemporaryDirectory(prefix="bff-voice-chat-") as tmpdir:
         tmpdir_path = Path(tmpdir)
         try:
             turn = 1
-            for phrase in phrase_stream(config):
+            while True:
+                try:
+                    if pending_segments:
+                        phrase = pending_segments.pop(0)
+                    else:
+                        phrase = segment_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+
                 raw_audio = tmpdir_path / f"turn-{turn:03d}-input.wav"
                 sf.write(raw_audio, phrase, config.sample_rate)
 
@@ -597,10 +672,26 @@ def run_conversation(config: ConversationConfig) -> None:
                         "audio_path": str(raw_audio),
                     },
                 )
-                assistant_text = query_ollama(config.ollama_model, messages)
+
+                abort_event = threading.Event()
+                assistant_text = query_ollama(
+                    config.ollama_model,
+                    messages,
+                    segment_queue=segment_queue,
+                    pending_segments=pending_segments,
+                    abort_event=abort_event,
+                )
                 if not assistant_text:
-                    print("Assistant returned empty response; stopping.")
-                    break
+                    append_log_line(
+                        log_file,
+                        {
+                            "type": "assistant_cancelled",
+                            "session_id": session_id,
+                            "turn": turn,
+                        },
+                    )
+                    turn += 1
+                    continue
 
                 messages.append({"role": "assistant", "content": assistant_text})
 
@@ -626,6 +717,8 @@ def run_conversation(config: ConversationConfig) -> None:
         except KeyboardInterrupt:
             print("\nExiting conversation.")
         finally:
+            stop_event.set()
+            producer_thread.join(timeout=1.0)
             append_log_line(
                 log_file,
                 {"type": "session_end", "session_id": session_id},
