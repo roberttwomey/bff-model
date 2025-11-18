@@ -17,6 +17,8 @@ Requirements:
 
 Example usage:
     python noweb/bff-voice-chat.py --piper-voice piper/en_GB-alan-medium.onnx
+    
+    python noweb/bff-voice-chat.py --piper-voice noweb/piper/en_GB-alan-medium.onnx --show-levels
 
 Environment variables:
     BFF_OLLAMA_MODEL   override Ollama model name (default: gemma3n:e2b)
@@ -45,6 +47,8 @@ import ollama
 import sounddevice as sd
 import soundfile as sf
 import whisper
+import torch
+import dotenv
 
 from piper import PiperVoice
 try:  # Optional type that some versions expose
@@ -53,17 +57,28 @@ except ImportError:  # pragma: no cover - older library versions
     AudioChunk = None
 
 
+dotenv.load_dotenv()
+
 DEFAULT_SYSTEM_PROMPT = (
-    "you are SNAPPER a robot dog. you do not say woof, whir, tail wag. answer in 2 sentences or less."
+    os.environ.get(
+        "BFF_SYSTEM_PROMPT",
+        "you are SNAPPER a robot dog. you do not say woof, whir, tail wag. answer in 2 sentences or less.",
+    )
 )
 
-DEFAULT_OLLAMA_MODEL = os.environ.get("BFF_OLLAMA_MODEL", "gemma3n:e4b")
-DEFAULT_WHISPER_MODEL = os.environ.get("BFF_WHISPER_MODEL", "base")
-DEFAULT_SAMPLE_RATE = 16_000
+# DEFAULT_OLLAMA_MODEL = os.environ.get("BFF_OLLAMA_MODEL", "gemma3n:e4b")
+DEFAULT_OLLAMA_MODEL = os.environ.get("BFF_OLLAMA_MODEL", "gemma3n:e2b")
+DEFAULT_WHISPER_MODEL = os.environ.get("BFF_WHISPER_MODEL", "tiny")
+DEFAULT_SAMPLE_RATE = int(os.environ.get("BFF_SAMPLE_RATE", "16000"))
 DEFAULT_INPUT_DEVICE_KEYWORD = os.environ.get(
     "BFF_INPUT_DEVICE_KEYWORD", "OpenRun Pro 2 by Shokz"
 )
-LOG_ROOT = Path.home() / "bff" / "logs"
+DEFAULT_ACTIVATION_THRESHOLD = float(os.environ.get("BFF_ACTIVATION_THRESHOLD", "0.03"))
+DEFAULT_SILENCE_THRESHOLD = float(os.environ.get("BFF_SILENCE_THRESHOLD", "0.015"))
+DEFAULT_SILENCE_DURATION = float(os.environ.get("BFF_SILENCE_DURATION", "0.8"))
+DEFAULT_MIN_PHRASE_SECONDS = float(os.environ.get("BFF_MIN_PHRASE_SECONDS", "0.5"))
+DEFAULT_BLOCK_DURATION = float(os.environ.get("BFF_BLOCK_DURATION", "0.2"))
+LOG_ROOT = Path(os.environ.get("BFF_LOG_ROOT", Path.home() / "bff" / "logs")).expanduser()
 
 
 @dataclass
@@ -80,11 +95,11 @@ class ConversationConfig:
     piper_length_scale: float | None = None
     piper_noise_scale: float | None = None
     piper_noise_w: float | None = None
-    activation_threshold: float = 0.03
-    silence_threshold: float = 0.015
-    silence_duration: float = 0.8
-    min_phrase_seconds: float = 0.5
-    block_duration: float = 0.2
+    activation_threshold: float = DEFAULT_ACTIVATION_THRESHOLD
+    silence_threshold: float = DEFAULT_SILENCE_THRESHOLD
+    silence_duration: float = DEFAULT_SILENCE_DURATION
+    min_phrase_seconds: float = DEFAULT_MIN_PHRASE_SECONDS
+    block_duration: float = DEFAULT_BLOCK_DURATION
     show_levels: bool = False
     input_device_keyword: str | None = DEFAULT_INPUT_DEVICE_KEYWORD
     input_device_index: int | None = None
@@ -219,7 +234,12 @@ def parse_args() -> ConversationConfig:
 
 def load_whisper_model(name: str) -> whisper.Whisper:
     print(f"Loading Whisper model '{name}'…", file=sys.stderr)
-    return whisper.load_model(name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        print("CUDA available; loading Whisper on GPU.", file=sys.stderr)
+    else:
+        print("CUDA not available; falling back to CPU.", file=sys.stderr)
+    return whisper.load_model(name, device=device)
 
 
 def resolve_piper_config_path(model_path: Path, config_path: Path | None) -> Path:
@@ -431,7 +451,27 @@ def query_ollama(
     show_levels: bool,
 ) -> str | None:
     meter_break(show_levels)
-    print(f"Querying Ollama model '{model_name}'…", file=sys.stderr)
+    snippet = ""
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = (message.get("content") or "").strip()
+        if not content:
+            continue
+        collapsed = " ".join(content.split())
+        max_len = 80
+        snippet = collapsed[:max_len]
+        if len(collapsed) > max_len:
+            snippet += "…"
+        break
+
+    if snippet:
+        print(
+            f"Querying Ollama model '{model_name}' with \"{snippet}\"…",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Querying Ollama model '{model_name}'…", file=sys.stderr)
     client = ollama.Client()
 
     def extract_content(chunk: Any) -> str:
